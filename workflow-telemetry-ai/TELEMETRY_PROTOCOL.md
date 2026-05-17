@@ -7,19 +7,19 @@ When executing any skill in this plugin, record execution telemetry at step boun
 ### At skill start
 ```bash
 RUN_ID="run-$(date +%s)"
-node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID"
 ```
 
 ### For each step
 ```bash
-node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
 # ... do the work ...
-node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
 ```
 
 ### At skill end
 ```bash
-node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
+node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
 ```
 
 ## Details
