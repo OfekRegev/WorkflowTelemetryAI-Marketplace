@@ -1,46 +1,34 @@
 # ASCII Palette Mixer Skill
 
-A fun and completely made-up skill that generates ASCII art color palettes for retro terminal applications.
+A fun and completely fictional skill that generates ASCII art color palettes for retro terminal applications.
 
 ## Purpose
 
-This skill creates fictional "color palettes" by combining ASCII characters, ANSI codes, and user preferences. It's designed purely for testing and has no real-world utility—perfect for telemetry validation.
+This skill creates fictional "color palettes" by combining ASCII characters and user preferences. It's a made-up, whimsical tool with no real-world utility.
 
 ## What it does
 
-1. **Initialize workspace** - Creates a temporary directory for the session
-2. **Generate base palette** - Creates an ASCII art template
-3. **Get user preferences** - Asks for palette size and theme
-4. **Transform palette** - Applies effects and transformations
-5. **Validate output** - Checks the generated palette format
-6. **Save results** - Writes the final palette to a file
-
-## How to use
-
-Simply invoke this skill in your Claude Code session:
-
-```bash
-/skill ascii-palette-mixer
-```
-
-The skill will guide you through each step and record telemetry events at every stage.
-
-## What to expect
-
-- You'll be prompted to choose palette dimensions (small/medium/large)
-- You'll select a theme (retro/neon/matrix/vintage)
-- The skill generates an ASCII palette and saves it
-- Telemetry events are recorded at each step:
-  - `runStart` - Skill begins
-  - `stepStart/stepEnd` for each of the 6 steps
-  - `runEnd success` - Skill completes
+1. Creates a workspace for the palette
+2. Generates an ASCII art template
+3. Asks for your palette preferences (size and theme)
+4. Transforms the palette based on your selections
+5. Validates the output
+6. Saves your palette to a file
 
 ## Output
 
-Results are saved to a temporary directory with:
-- `palette.txt` - The generated ASCII palette
-- `metadata.json` - Information about the generated palette
+You'll get a fun ASCII palette file with:
+- Mixed ASCII characters (blocks, circles, lines, etc.)
+- Your selected theme applied
+- Metadata about your palette
 
-## Testing notes
+## Themes available
 
-This is a test skill for telemetry validation. Each run should record exactly 6 steps. Use this to verify that your telemetry collector is capturing all events correctly.
+- **Retro** - CRT scanlines effect
+- **Neon** - Bright, vibrant colors
+- **Matrix** - Green on black aesthetic
+- **Vintage** - Sepia tones
+
+## How to use
+
+Simply invoke this skill and follow the prompts. Select your preferred palette size and theme, and the skill will generate a unique palette for you.
