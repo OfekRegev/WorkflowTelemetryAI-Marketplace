@@ -29,14 +29,23 @@ node plugin/workflowTelemetryAI.js event runEnd "$RUN_ID" success
 
 Record telemetry as you execute the skill steps from SKILL.md:
 
-1. Generate `RUN_ID` and record `runStart`
-2. Execute Step 1 (initialize-workspace) with `stepStart` → work → `stepEnd`
-3. Execute Step 2 (generate-palette) with `stepStart` → work → `stepEnd`
-4. Execute Step 3 (get-user-preferences) with `stepStart` → work → `stepEnd`
-5. Execute Step 4 (transform-palette) with `stepStart` → work → `stepEnd`
-6. Execute Step 5 (validate-output) with `stepStart` → work → `stepEnd`
-7. Execute Step 6 (save-results) with `stepStart` → work → `stepEnd`
-8. Record `runEnd success`
+1. Generate `RUN_ID` and record `runStart`:
+   ```bash
+   RUN_ID="run-$(date +%s)"
+   node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event runStart ascii-palette-mixer "$RUN_ID"
+   ```
+
+2. For each step: record `stepStart` → execute work → record `stepEnd`
+   ```bash
+   node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
+   # ... do the work ...
+   node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
+   ```
+
+3. Record `runEnd success` when complete:
+   ```bash
+   node test-marketplace/workflow-telemetry-ai/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
+   ```
 
 ## Step names
 
