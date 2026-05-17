@@ -1,0 +1,15 @@
+{
+  "name": "Test Marketplace",
+  "owner": {
+    "name": "WorkflowTelemetryAI",
+    "url": "https://github.com/OfekRegev/WorkflowTelemetryAI"
+  },
+  "plugins": [
+    {
+      "name": "workflow-telemetry-ai",
+      "source": "../workflow-telemetry-ai",
+      "description": "Skill-level observability for agentic workflows",
+      "version": "0.1.0"
+    }
+  ]
+}
