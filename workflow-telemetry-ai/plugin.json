@@ -1,6 +1,6 @@
 {
   "name": "workflow-telemetry-ai",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Skill-level observability for agentic workflows",
   "author": {
     "name": "WorkflowTelemetryAI"
