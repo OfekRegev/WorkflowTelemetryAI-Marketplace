@@ -32,19 +32,19 @@ Record telemetry as you execute the skill steps from SKILL.md:
 1. Generate `RUN_ID` and record `runStart`:
    ```bash
    RUN_ID="run-$(date +%s)"
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event runStart ascii-palette-mixer "$RUN_ID"
+   node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runStart ascii-palette-mixer "$RUN_ID"
    ```
 
 2. For each step: record `stepStart` → execute work → record `stepEnd`
    ```bash
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
+   node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
    # ... do the work ...
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
+   node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
    ```
 
 3. Record `runEnd success` when complete:
    ```bash
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
+   node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
    ```
 
 ## Step names
