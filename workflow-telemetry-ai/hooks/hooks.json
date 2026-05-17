@@ -7,11 +7,33 @@
           {
             "type": "command",
             "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "session-start"]
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/read-telemetry.js"],
             "statusMessage": "Loading telemetry protocol..."
           }
         ]
       }
     ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "session-end"]
+          }
+        ]
+      }
+    ]
   }
 }
