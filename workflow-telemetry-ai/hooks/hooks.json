@@ -10,6 +10,17 @@
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "session-start"]
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/TELEMETRY_PROTOCOL.md"],
+            "statusMessage": "Loading telemetry protocol..."
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -24,18 +35,5 @@
         ]
       }
     ],
-    "UserPromptExpansion": [
-      {
-        "matcher": "ascii-palette-mixer",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/skills/test-skill/CLAUDE.md"],
-            "statusMessage": "Loading telemetry protocol..."
-          }
-        ]
-      }
-    ]
   }
 }
