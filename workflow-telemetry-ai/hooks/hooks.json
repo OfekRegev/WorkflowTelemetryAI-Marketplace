@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["-e", "console.log(require('fs').readFileSync('${CLAUDE_PLUGIN_ROOT}/TELEMETRY_PROTOCOL.md', 'utf8'))"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/read-telemetry.js"],
             "statusMessage": "Loading telemetry protocol..."
           }
         ]
