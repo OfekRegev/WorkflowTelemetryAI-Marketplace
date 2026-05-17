@@ -16,8 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/TELEMETRY_PROTOCOL.md"],
+            "command": "node",
+            "args": ["-e", "console.log(require('fs').readFileSync('${CLAUDE_PLUGIN_ROOT}/TELEMETRY_PROTOCOL.md', 'utf8'))"],
             "statusMessage": "Loading telemetry protocol..."
           }
         ]
