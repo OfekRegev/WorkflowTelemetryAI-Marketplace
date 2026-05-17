@@ -13,13 +13,10 @@ Collects user preferences and generates a unique ASCII art palette file with met
 Create a temporary working directory for this session:
 
 ```bash
-RUN_ID="run-$(date +%s)"
-WORK_DIR="/tmp/ascii-palette-mixer-$RUN_ID"
+WORK_DIR="/tmp/ascii-palette-mixer-$(date +%s)"
 mkdir -p "$WORK_DIR"
 echo "Initialized workspace at $WORK_DIR"
 ```
-
-**Telemetry:** Record `stepStart: initialize-workspace` and `stepEnd: initialize-workspace` with your RUN_ID.
 
 ### Step 2: Generate base palette
 
@@ -44,8 +41,6 @@ ANSI Color References:
 EOF
 echo "Generated base palette template"
 ```
-
-**Telemetry:** Record `stepStart: generate-palette` and `stepEnd: generate-palette`.
 
 ### Step 3: Get user preferences
 
@@ -72,8 +67,6 @@ Accept input, default to 1 (Retro) if empty.
 
 Store both selections for later use.
 
-**Telemetry:** Record `stepStart: get-user-preferences` and `stepEnd: get-user-preferences`.
-
 ### Step 4: Transform palette
 
 Based on the theme selected, describe the transformation and append to palette.txt:
@@ -99,8 +92,6 @@ case $theme_choice in
 esac
 ```
 
-**Telemetry:** Record `stepStart: transform-palette` and `stepEnd: transform-palette`.
-
 ### Step 5: Validate output
 
 Check that the palette file is valid:
@@ -118,8 +109,6 @@ fi
 
 Output the validation result. Both "passed" and "warning" are acceptable outcomes.
 
-**Telemetry:** Record `stepStart: validate-output` and `stepEnd: validate-output`.
-
 ### Step 6: Save results
 
 Create a metadata.json file with the palette information:
@@ -128,7 +117,6 @@ Create a metadata.json file with the palette information:
 cat > "$WORK_DIR/metadata.json" << EOF
 {
   "skill": "ascii-palette-mixer",
-  "run_id": "$RUN_ID",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "palette_size": "$size_choice",
   "theme": "$THEME",
@@ -144,30 +132,9 @@ echo "✓ Results saved to $WORK_DIR"
 
 Output the workspace location so the user can access the generated files.
 
-**Telemetry:** Record `stepStart: save-results` and `stepEnd: save-results`.
-
-## Telemetry protocol
-
-Record telemetry events at the step boundaries using:
-
-```bash
-node plugin/workflowTelemetryAI.js event runStart ascii-palette-mixer "$RUN_ID"
-# ... steps ...
-node plugin/workflowTelemetryAI.js event runEnd "$RUN_ID" success
-```
-
-Each step must record both stepStart and stepEnd. See step instructions above for the exact step names.
-
 ## Expected output
 
 After completion:
 - A palette.txt file with ASCII characters and the applied theme
 - A metadata.json file with run information and validation status
 - Console output showing each step's progress
-
-## Notes
-
-- This is a completely fictional skill with no real-world utility
-- All user input prompts should have sensible defaults
-- The validation step may warn but should not fail the skill
-- File paths use `/tmp/` which is a common temporary directory on Unix systems
