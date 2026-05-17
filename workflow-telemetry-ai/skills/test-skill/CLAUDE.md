@@ -1,59 +1,51 @@
-# Test Skill
+# ASCII Palette Mixer Skill
 
-This skill records execution telemetry using WorkflowTelemetryAI. Follow the telemetry protocol at step boundaries.
+A telemetry test skill that generates fictional ASCII art color palettes. This skill exercises the telemetry system with multiple steps and user interaction.
 
-## Telemetry Event Recording Protocol
+## Skill Implementation
 
-### Event Types
+When running this skill, follow the WorkflowTelemetryAI telemetry protocol exactly. Record events at each step boundary.
 
-#### At skill start
-```bash
-node plugin/workflowTelemetryAI.js event runStart test-skill <runId>
-```
-Generate a unique `runId` (e.g., `run-$(date +%s)`).
+### Steps to execute
 
-#### At step start
-```bash
-node plugin/workflowTelemetryAI.js event stepStart <stepName> <runId>
-```
+1. **Initialize workspace** - Create a temp directory for this session
+2. **Generate base palette** - Create ASCII art with mixed characters
+3. **Get user preferences** - Ask user for palette size and theme selection
+4. **Transform palette** - Apply the selected theme to the palette
+5. **Validate output** - Verify the palette meets basic format requirements
+6. **Save results** - Write palette and metadata to files
 
-#### At step end
-```bash
-node plugin/workflowTelemetryAI.js event stepEnd <stepName> <runId>
-```
+### Telemetry Protocol
 
-#### At skill end
-```bash
-node plugin/workflowTelemetryAI.js event runEnd <runId> [status]
-```
-Status is optional, defaults to `success`. Use `failure` if the skill failed.
-
-## Example Workflow
+Record telemetry events using the WorkflowTelemetryAI plugin at each step:
 
 ```bash
-# Start run
+# At skill start
 RUN_ID="run-$(date +%s)"
-node plugin/workflowTelemetryAI.js event runStart test-skill $RUN_ID
+node plugin/workflowTelemetryAI.js event runStart ascii-palette-mixer $RUN_ID
 
-# First step
-node plugin/workflowTelemetryAI.js event stepStart step-one $RUN_ID
-echo "Doing step one..."
-node plugin/workflowTelemetryAI.js event stepEnd step-one $RUN_ID
+# For each step
+node plugin/workflowTelemetryAI.js event stepStart <step-name> $RUN_ID
+# ... do the work ...
+node plugin/workflowTelemetryAI.js event stepEnd <step-name> $RUN_ID
 
-# Second step
-node plugin/workflowTelemetryAI.js event stepStart step-two $RUN_ID
-echo "Doing step two..."
-node plugin/workflowTelemetryAI.js event stepEnd step-two $RUN_ID
-
-# End run
+# At skill end
 node plugin/workflowTelemetryAI.js event runEnd $RUN_ID success
 ```
 
-## Automatic Telemetry
+### Example step names
 
-Once you call `runEnd`, the collector will:
-1. Copy the transcript to the run directory
-2. Spawn a background process to extract logs and send to telemetry
-3. Return immediately (non-blocking)
+- `initialize-workspace`
+- `generate-palette`
+- `get-user-preferences`
+- `transform-palette`
+- `validate-output`
+- `save-results`
 
-You're done! The telemetry is handled in the background.
+## Testing Notes
+
+- This is a completely fictional skill made for telemetry validation
+- The "color palette" output has no actual utility
+- Each run should record exactly 1 runStart, 6 pairs of stepStart/stepEnd, and 1 runEnd
+- Total expected events per run: 14 events
+- If you see fewer events, check that all steps recorded their telemetry
