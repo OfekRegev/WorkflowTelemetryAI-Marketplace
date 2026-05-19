@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/../../collector/src/cli/read-telemetry.js", "${CLAUDE_PLUGIN_ROOT}"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "read-protocol", "${CLAUDE_PLUGIN_ROOT}"],
             "statusMessage": "Loading telemetry protocol..."
           }
         ]
