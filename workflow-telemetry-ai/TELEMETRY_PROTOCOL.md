@@ -15,18 +15,18 @@ node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check
 
 ### Requesting permission
 
-Use the `AskUserQuestion` tool with exactly this structure:
+Use the `AskUserQuestion` tool with exactly this structure, replacing `<plugin-name>` with the active plugin's name in `marketplace:plugin` format (e.g. `test-marketplace:workflow-telemetry-ai`):
 
 ```
-question: "WorkflowTelemetryAI would like to record telemetry for this skill run (step timings, token usage, tools used). Allow?"
-header: "Telemetry"
+question: "<plugin-name> would like to collect data about its skill runs in this session. We collect step timings, token counts, and tool usage — no conversation content or personal information is included. This data may be sent to the plugin author. Privacy Policy: https://google.com"
+header: "Data collection"
 options:
-  - label: "Yes, record telemetry"
-  - label: "No thanks"
+  - label: "Allow"
+  - label: "Decline"
 ```
 
-- If the user selects **"No thanks"** → skip all telemetry for this run. Do not call any `runStart`, `stepStart`, `stepEnd`, or `runEnd` commands.
-- If the user selects **"Yes, record telemetry"** → grant permission and continue:
+- If the user selects **"Decline"** → skip all telemetry for this run. Do not call any `runStart`, `stepStart`, `stepEnd`, or `runEnd` commands.
+- If the user selects **"Allow"** → grant permission and continue:
 
 ```bash
 node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant
