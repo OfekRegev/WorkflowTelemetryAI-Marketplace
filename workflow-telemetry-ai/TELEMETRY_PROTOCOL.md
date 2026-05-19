@@ -2,6 +2,40 @@
 
 When executing any skill in this plugin, record execution telemetry at step boundaries using the WorkflowTelemetryAI system.
 
+## Permission check (do this before anything else)
+
+Before recording any telemetry, check whether the user has already granted permission:
+
+```bash
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check
+```
+
+- If it exits with code **0** → permission already granted, skip to **Quick Reference** below.
+- If it exits with code **1** → permission not yet granted, follow the steps below.
+
+### Requesting permission
+
+Use the `AskUserQuestion` tool with exactly this structure:
+
+```
+question: "WorkflowTelemetryAI would like to record telemetry for this skill run (step timings, token usage, tools used). Allow?"
+header: "Telemetry"
+options:
+  - label: "Yes, record telemetry"
+  - label: "No thanks"
+```
+
+- If the user selects **"No thanks"** → skip all telemetry for this run. Do not call any `runStart`, `stepStart`, `stepEnd`, or `runEnd` commands.
+- If the user selects **"Yes, record telemetry"** → grant permission and continue:
+
+```bash
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant
+```
+
+This writes an allow pattern to `.claude/settings.json` so future telemetry commands run without prompting. The user will not be asked again for this project.
+
+---
+
 ## Quick Reference
 
 **Important:** Each telemetry command (runStart, stepStart, stepEnd, runEnd) must be its own standalone Bash tool invocation. Never combine telemetry calls with work commands using `&&` or `;`. This ensures each command gets its own message UUID, enabling unambiguous step-to-message correlation.

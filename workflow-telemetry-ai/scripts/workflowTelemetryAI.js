@@ -231,6 +231,98 @@ async function handleSessionStart() {
 
 /***/ },
 
+/***/ 223
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.handlePermissionCheck = handlePermissionCheck;
+exports.handlePermissionGrant = handlePermissionGrant;
+const fs = __importStar(__webpack_require__(896));
+const path = __importStar(__webpack_require__(928));
+const SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.json');
+function buildAllowPattern(pluginRoot) {
+    const normalized = path.resolve(pluginRoot).replace(/\\/g, '/');
+    return `Bash(node ${normalized}/scripts/workflowTelemetryAI.js*)`;
+}
+function readSettings() {
+    try {
+        return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    }
+    catch {
+        return {};
+    }
+}
+function writeSettings(settings) {
+    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+function handlePermissionCheck(pluginRoot) {
+    if (!pluginRoot)
+        throw new Error('permission check requires plugin root path as argument');
+    const pattern = buildAllowPattern(pluginRoot);
+    const settings = readSettings();
+    const permissions = settings.permissions || {};
+    const allow = permissions.allow || [];
+    if (allow.includes(pattern)) {
+        process.exit(0);
+    }
+    else {
+        process.exit(1);
+    }
+}
+function handlePermissionGrant(pluginRoot) {
+    if (!pluginRoot)
+        throw new Error('permission grant requires plugin root path as argument');
+    const pattern = buildAllowPattern(pluginRoot);
+    const settings = readSettings();
+    const permissions = settings.permissions || {};
+    const allow = permissions.allow || [];
+    if (!allow.includes(pattern)) {
+        allow.push(pattern);
+        permissions.allow = allow;
+        settings.permissions = permissions;
+        writeSettings(settings);
+    }
+    process.stdout.write(`Telemetry permission granted.\n`);
+}
+
+
+/***/ },
+
 /***/ 478
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -584,6 +676,7 @@ const session_start_1 = __webpack_require__(234);
 const session_end_1 = __webpack_require__(847);
 const send_run_1 = __webpack_require__(257);
 const read_protocol_1 = __webpack_require__(980);
+const permissions_1 = __webpack_require__(223);
 const record_1 = __webpack_require__(775);
 const [, , mode, subcommand, ...args] = process.argv;
 async function main() {
@@ -593,12 +686,18 @@ async function main() {
                 await (0, session_start_1.handleSessionStart)();
             else if (subcommand === 'session-end')
                 await (0, session_end_1.handleSessionEnd)();
-            else if (subcommand === 'read-protocol') {
-                const pluginRoot = args[0];
-                (0, read_protocol_1.handleReadProtocol)(pluginRoot);
-            }
+            else if (subcommand === 'read-protocol')
+                (0, read_protocol_1.handleReadProtocol)(args[0]);
             else
                 throw new Error(`Unknown hook subcommand: ${subcommand}`);
+        }
+        else if (mode === 'permission') {
+            if (subcommand === 'check')
+                (0, permissions_1.handlePermissionCheck)(args[0]);
+            else if (subcommand === 'grant')
+                (0, permissions_1.handlePermissionGrant)(args[0]);
+            else
+                throw new Error(`Unknown permission subcommand: ${subcommand}`);
         }
         else if (mode === 'event') {
             (0, record_1.handleEvent)(subcommand, args);
@@ -611,7 +710,7 @@ async function main() {
             await (0, send_run_1.handleSendRun)(sessionId, runId);
         }
         else {
-            throw new Error('Usage: node workflowTelemetryAI.js <hook|event|send-run> <subcommand> [args]');
+            throw new Error('Usage: node workflowTelemetryAI.js <hook|event|permission|send-run> <subcommand> [args]');
         }
     }
     catch (err) {
