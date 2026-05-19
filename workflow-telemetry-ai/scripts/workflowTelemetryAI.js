@@ -290,7 +290,14 @@ const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
 const SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.local.json');
 function buildAllowPattern(pluginRoot) {
+    // Extract marketplace/plugin name from the path to build a version-agnostic glob.
+    // Cache path format: .../plugins/cache/<marketplace>/<plugin>/<version>/
     const normalized = path.resolve(pluginRoot).replace(/\\/g, '/');
+    const match = normalized.match(/\/plugins\/cache\/([^/]+\/[^/]+)\/[^/]+$/);
+    if (match) {
+        return `Bash(node */plugins/cache/${match[1]}/*/scripts/workflowTelemetryAI.js*)`;
+    }
+    // Fallback for non-standard paths
     return `Bash(node ${normalized}/scripts/workflowTelemetryAI.js*)`;
 }
 function readSettings() {
