@@ -32,7 +32,7 @@ options:
 node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant
 ```
 
-This writes an allow pattern to `.claude/settings.json` so future telemetry commands run without prompting. The user will not be asked again for this project.
+This writes an allow pattern to `.claude/settings.local.json` so future telemetry commands run without prompting. The user will not be asked again for this project.
 
 ---
 

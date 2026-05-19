@@ -273,7 +273,7 @@ exports.handlePermissionCheck = handlePermissionCheck;
 exports.handlePermissionGrant = handlePermissionGrant;
 const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
-const SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.json');
+const SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.local.json');
 function buildAllowPattern(pluginRoot) {
     const normalized = path.resolve(pluginRoot).replace(/\\/g, '/');
     return `Bash(node ${normalized}/scripts/workflowTelemetryAI.js*)`;
