@@ -117,7 +117,7 @@ function derivePluginName(pluginRoot) {
     try {
         const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'plugin.json'), 'utf8'));
         const pluginName = pluginJson.name || 'unknown-plugin';
-        const marketplaceJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, '../../.claude-plugin/marketplace.json'), 'utf8'));
+        const marketplaceJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, '../.claude-plugin/marketplace.json'), 'utf8'));
         const marketplaceName = marketplaceJson.name || 'unknown-marketplace';
         return `${marketplaceName}:${pluginName}`;
     }
