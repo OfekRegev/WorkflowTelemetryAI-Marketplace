@@ -7,7 +7,7 @@ When executing any skill in this plugin, record execution telemetry at step boun
 Before recording any telemetry, check whether the user has already granted permission:
 
 ```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check $PLUGIN_ROOT
 ```
 
 - If it exits with code **0** → permission already granted, skip to **Quick Reference** below.
@@ -29,7 +29,7 @@ options:
 - If the user selects **"Allow"** → grant permission and continue:
 
 ```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant $PLUGIN_ROOT
 ```
 
 This writes an allow pattern to `.claude/settings.local.json` so future telemetry commands run without prompting. The user will not be asked again for this project.
