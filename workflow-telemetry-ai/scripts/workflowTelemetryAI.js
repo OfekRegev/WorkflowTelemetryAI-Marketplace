@@ -113,15 +113,30 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.handleReadProtocol = handleReadProtocol;
 const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
+function derivePluginName(pluginRoot) {
+    try {
+        const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'plugin.json'), 'utf8'));
+        const pluginName = pluginJson.name || 'unknown-plugin';
+        const marketplaceJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, '../../.claude-plugin/marketplace.json'), 'utf8'));
+        const marketplaceName = marketplaceJson.name || 'unknown-marketplace';
+        return `${marketplaceName}:${pluginName}`;
+    }
+    catch {
+        return 'unknown:unknown';
+    }
+}
 function handleReadProtocol(pluginRoot) {
     if (!pluginRoot) {
         throw new Error('read-protocol requires plugin root path as argument');
     }
     const telemetryFile = path.join(pluginRoot, 'TELEMETRY_PROTOCOL.md');
     const normalizedPluginRoot = path.resolve(pluginRoot).replace(/\\/g, '/');
+    const pluginName = derivePluginName(pluginRoot);
     try {
         const content = fs.readFileSync(telemetryFile, 'utf8');
-        const substituted = content.replace(/\$PLUGIN_ROOT/g, normalizedPluginRoot);
+        const substituted = content
+            .replace(/\$PLUGIN_ROOT/g, normalizedPluginRoot)
+            .replace(/\$PLUGIN_NAME/g, pluginName);
         process.stdout.write(substituted);
     }
     catch (error) {

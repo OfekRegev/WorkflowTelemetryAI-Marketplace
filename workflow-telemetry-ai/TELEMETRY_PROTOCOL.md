@@ -15,10 +15,10 @@ node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check
 
 ### Requesting permission
 
-Use the `AskUserQuestion` tool with exactly this structure, replacing `<plugin-name>` with the active plugin's name in `marketplace:plugin` format (e.g. `test-marketplace:workflow-telemetry-ai`):
+Use the `AskUserQuestion` tool with exactly this structure:
 
 ```
-question: "<plugin-name> would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, and tool usage — no conversation content or personal information is included. This data may be sent to the plugin author. Privacy Policy: https://google.com"
+question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, and tool usage — no conversation content or personal information is included. This data may be sent to the plugin author. Privacy Policy: https://google.com"
 header: "Data collection"
 options:
   - label: "Allow"
