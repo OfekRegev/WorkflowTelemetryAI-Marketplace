@@ -75,6 +75,52 @@ function handleEvent(eventType, args) {
 
 /***/ },
 
+/***/ 777
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.handlePostRunEnd = handlePostRunEnd;
+const child_process_1 = __webpack_require__(317);
+const fs_1 = __importDefault(__webpack_require__(896));
+const path_1 = __importDefault(__webpack_require__(928));
+const stdin_1 = __webpack_require__(308);
+const config_1 = __webpack_require__(478);
+async function handlePostRunEnd() {
+    try {
+        const input = await (0, stdin_1.readStdin)();
+        const payload = JSON.parse(input);
+        if (payload.tool_name !== 'Bash')
+            return;
+        const command = payload.tool_input.command;
+        if (!command.includes('workflowTelemetryAI.js') || !command.includes('event runEnd'))
+            return;
+        const tokens = command.split(/\s+/);
+        const runEndIndex = tokens.findIndex(t => t === 'runEnd');
+        if (runEndIndex === -1)
+            return;
+        const runId = tokens[runEndIndex + 1]?.replace(/^['"]|['"]$/g, '');
+        const sessionId = tokens[tokens.length - 1]?.replace(/^['"]|['"]$/g, '');
+        if (!runId || !sessionId)
+            return;
+        const sentPath = path_1.default.join((0, config_1.getRunDir)(sessionId, runId), 'sent.marker');
+        if (fs_1.default.existsSync(sentPath))
+            return;
+        (0, child_process_1.spawn)(process.execPath, [process.argv[1], 'send-run', sessionId, runId], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+        }).unref();
+    }
+    catch { }
+}
+
+
+/***/ },
+
 /***/ 980
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -151,6 +197,58 @@ async function handleReadProtocol(pluginRoot) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Failed to read telemetry protocol: ${message}`);
     }
+}
+
+
+/***/ },
+
+/***/ 85
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.handleScanAndSend = handleScanAndSend;
+const child_process_1 = __webpack_require__(317);
+const fs_1 = __importDefault(__webpack_require__(896));
+const path_1 = __importDefault(__webpack_require__(928));
+const stdin_1 = __webpack_require__(308);
+const config_1 = __webpack_require__(478);
+async function handleScanAndSend() {
+    try {
+        const input = await (0, stdin_1.readStdin)();
+        const payload = JSON.parse(input);
+        const sessionId = payload.session_id;
+        if (!sessionId)
+            return;
+        const sessionDir = (0, config_1.getSessionDir)(sessionId);
+        if (!fs_1.default.existsSync(sessionDir))
+            return;
+        const runDirs = fs_1.default.readdirSync(sessionDir);
+        for (const runId of runDirs) {
+            const runDir = path_1.default.join(sessionDir, runId);
+            const sentPath = path_1.default.join(runDir, 'sent.marker');
+            const lockPath = path_1.default.join(runDir, 'sending.lock');
+            const eventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
+            if (fs_1.default.existsSync(sentPath))
+                continue; // Already sent
+            if (fs_1.default.existsSync(lockPath))
+                continue; // In progress
+            if (!fs_1.default.existsSync(eventsPath))
+                continue; // No events yet
+            const eventsContent = fs_1.default.readFileSync(eventsPath, 'utf-8');
+            if (!eventsContent.includes('"type":"runEnd"'))
+                continue; // Run not complete
+            (0, child_process_1.spawn)(process.execPath, [process.argv[1], 'send-run', sessionId, runId], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true
+            }).unref();
+        }
+    }
+    catch { }
 }
 
 
@@ -517,28 +615,51 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sendRunData = sendRunData;
 const fs_1 = __importDefault(__webpack_require__(896));
+const path_1 = __importDefault(__webpack_require__(928));
 const session_1 = __webpack_require__(214);
 const config_1 = __webpack_require__(478);
 const logs_1 = __webpack_require__(583);
 const http_1 = __webpack_require__(260);
 async function sendRunData(sessionId, runId) {
-    const context = (0, session_1.readSessionContext)(sessionId);
-    const transcriptSnapshotPath = (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId);
-    const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
-    const { logs, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
-    const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
-    const result = await (0, http_1.postJson)(serverUrl, {
-        sessionId,
-        runId,
-        logs,
-        events
-    });
-    if (result.status >= 200 && result.status < 300) {
-        const runDir = (0, config_1.getRunDir)(sessionId, runId);
-        fs_1.default.rmSync(runDir, { recursive: true, force: true });
+    const runDir = (0, config_1.getRunDir)(sessionId, runId);
+    const lockPath = path_1.default.join(runDir, 'sending.lock');
+    const sentPath = path_1.default.join(runDir, 'sent.marker');
+    // Already sent
+    if (fs_1.default.existsSync(sentPath))
+        return;
+    // Atomic lock acquisition
+    let fd;
+    try {
+        fd = fs_1.default.openSync(lockPath, 'wx');
+        fs_1.default.closeSync(fd);
     }
-    else {
-        throw new Error(`Server returned ${result.status}: ${result.body}`);
+    catch {
+        return; // Another send in progress
+    }
+    try {
+        const context = (0, session_1.readSessionContext)(sessionId);
+        const transcriptSnapshotPath = (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId);
+        const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
+        const { logs, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
+        const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
+        const result = await (0, http_1.postJson)(serverUrl, {
+            sessionId,
+            runId,
+            logs,
+            events
+        });
+        if (result.status >= 200 && result.status < 300) {
+            fs_1.default.writeFileSync(sentPath, '');
+        }
+        else {
+            throw new Error(`Server returned ${result.status}: ${result.body}`);
+        }
+    }
+    finally {
+        try {
+            fs_1.default.unlinkSync(lockPath);
+        }
+        catch { }
     }
 }
 
@@ -702,6 +823,8 @@ const session_start_1 = __webpack_require__(234);
 const session_end_1 = __webpack_require__(847);
 const send_run_1 = __webpack_require__(257);
 const read_protocol_1 = __webpack_require__(980);
+const post_run_end_1 = __webpack_require__(777);
+const scan_and_send_1 = __webpack_require__(85);
 const permissions_1 = __webpack_require__(223);
 const record_1 = __webpack_require__(775);
 const [, , mode, subcommand, ...args] = process.argv;
@@ -714,6 +837,10 @@ async function main() {
                 await (0, session_end_1.handleSessionEnd)();
             else if (subcommand === 'read-protocol')
                 await (0, read_protocol_1.handleReadProtocol)(args[0]);
+            else if (subcommand === 'post-run-end')
+                await (0, post_run_end_1.handlePostRunEnd)();
+            else if (subcommand === 'scan-and-send')
+                await (0, scan_and_send_1.handleScanAndSend)();
             else
                 throw new Error(`Unknown hook subcommand: ${subcommand}`);
         }
