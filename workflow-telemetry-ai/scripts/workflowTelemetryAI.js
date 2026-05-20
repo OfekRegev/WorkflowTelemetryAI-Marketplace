@@ -19,7 +19,10 @@ const transcript_1 = __webpack_require__(210);
 function handleEvent(eventType, args) {
     if (!eventType)
         throw new Error('Missing event type. Usage: event <runStart|stepStart|stepEnd|runEnd> [args]');
-    const sessionId = (0, session_1.getCurrentSessionId)();
+    const sessionId = args[args.length - 1];
+    if (!sessionId)
+        throw new Error('Missing session ID. All event commands require session ID as the last argument.');
+    args = args.slice(0, -1);
     const context = (0, session_1.readSessionContext)(sessionId);
     const lastUuid = (0, transcript_1.getLastAssistantUuid)(context.transcriptPath);
     const baseEvent = {
@@ -113,6 +116,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.handleReadProtocol = handleReadProtocol;
 const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
+const stdin_1 = __webpack_require__(308);
 function derivePluginName(pluginRoot) {
     try {
         const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'plugin.json'), 'utf8'));
@@ -125,10 +129,13 @@ function derivePluginName(pluginRoot) {
         return 'unknown:unknown';
     }
 }
-function handleReadProtocol(pluginRoot) {
+async function handleReadProtocol(pluginRoot) {
     if (!pluginRoot) {
         throw new Error('read-protocol requires plugin root path as argument');
     }
+    const input = await (0, stdin_1.readStdin)();
+    const payload = JSON.parse(input);
+    const sessionId = payload.session_id || '';
     const telemetryFile = path.join(pluginRoot, 'TELEMETRY_PROTOCOL.md');
     const normalizedPluginRoot = path.resolve(pluginRoot).replace(/\\/g, '/');
     const pluginName = derivePluginName(pluginRoot);
@@ -136,7 +143,8 @@ function handleReadProtocol(pluginRoot) {
         const content = fs.readFileSync(telemetryFile, 'utf8');
         const substituted = content
             .replace(/\$PLUGIN_ROOT/g, normalizedPluginRoot)
-            .replace(/\$PLUGIN_NAME/g, pluginName);
+            .replace(/\$PLUGIN_NAME/g, pluginName)
+            .replace(/\$SESSION_ID/g, sessionId);
         process.stdout.write(substituted);
     }
     catch (error) {
@@ -201,11 +209,7 @@ async function handleSessionEnd() {
                 }
             }
         }
-        fs_1.default.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    const idFile = (0, config_1.getCurrentSessionIdPath)();
-    if (fs_1.default.existsSync(idFile) && fs_1.default.readFileSync(idFile, 'utf8').trim() === sessionId) {
-        fs_1.default.unlinkSync(idFile);
+        // fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 }
 
@@ -239,8 +243,8 @@ async function handleSessionStart() {
         startTime: new Date().toISOString()
     };
     fs_1.default.writeFileSync((0, config_1.getContextPath)(sessionId), JSON.stringify(context, null, 2));
-    fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
-    fs_1.default.writeFileSync((0, config_1.getCurrentSessionIdPath)(), sessionId);
+    // fs.mkdirSync(getBaseDir(), { recursive: true });
+    // fs.writeFileSync(getCurrentSessionIdPath(), sessionId);
 }
 
 
@@ -709,7 +713,7 @@ async function main() {
             else if (subcommand === 'session-end')
                 await (0, session_end_1.handleSessionEnd)();
             else if (subcommand === 'read-protocol')
-                (0, read_protocol_1.handleReadProtocol)(args[0]);
+                await (0, read_protocol_1.handleReadProtocol)(args[0]);
             else
                 throw new Error(`Unknown hook subcommand: ${subcommand}`);
         }

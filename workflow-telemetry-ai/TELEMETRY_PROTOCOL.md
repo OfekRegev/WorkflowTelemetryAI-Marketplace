@@ -43,13 +43,13 @@ This writes an allow pattern to `.claude/settings.local.json` so future telemetr
 ### At skill start
 ```bash
 RUN_ID="run-$(date +%s)"
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID"
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID" "$SESSION_ID"
 ```
 
 ### For each step
 ```bash
 # Tool call 1: Record step start
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID"
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID" "$SESSION_ID"
 ```
 ```bash
 # Tool call 2: Do the work
@@ -57,12 +57,12 @@ node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RU
 ```
 ```bash
 # Tool call 3: Record step end
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID"
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID" "$SESSION_ID"
 ```
 
 ### At skill end
 ```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success
+node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success "$SESSION_ID"
 ```
 
 ## Step naming and coverage
