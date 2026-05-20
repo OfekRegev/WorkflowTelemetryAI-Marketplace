@@ -593,8 +593,15 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
         for (const entry of entries) {
             if (entry.uuid === startUuid)
                 capturing = true;
-            if (capturing)
-                logs.push(entry);
+            if (capturing) {
+                const filtered = { ...entry };
+                // Strip conversation content
+                if (filtered.message) {
+                    filtered.message = { ...filtered.message };
+                    delete filtered.message.content;
+                }
+                logs.push(filtered);
+            }
             if (entry.uuid === endUuid)
                 break;
         }
