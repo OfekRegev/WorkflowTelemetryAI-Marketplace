@@ -583,11 +583,11 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
     const runStartEvent = events.find(e => e.type === 'runStart');
     const runEndEvent = events.find(e => e.type === 'runEnd');
     if (!runStartEvent || !runEndEvent) {
-        return { logs: [], events };
+        return { transcriptData: [], events };
     }
     const startUuid = runStartEvent.lastUuid;
     const endUuid = runEndEvent.lastUuid;
-    const logs = [];
+    const transcriptData = [];
     if (startUuid && endUuid) {
         let capturing = false;
         for (const entry of entries) {
@@ -600,13 +600,13 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
                     filtered.message = { ...filtered.message };
                     delete filtered.message.content;
                 }
-                logs.push(filtered);
+                transcriptData.push(filtered);
             }
             if (entry.uuid === endUuid)
                 break;
         }
     }
-    return { logs, events };
+    return { transcriptData, events };
 }
 
 
@@ -647,12 +647,12 @@ async function sendRunData(sessionId, runId) {
         const context = (0, session_1.readSessionContext)(sessionId);
         const transcriptSnapshotPath = (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId);
         const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
-        const { logs, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
+        const { transcriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
         const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
         const result = await (0, http_1.postJson)(serverUrl, {
             sessionId,
             runId,
-            logs,
+            transcriptData,
             events
         });
         if (result.status >= 200 && result.status < 300) {
