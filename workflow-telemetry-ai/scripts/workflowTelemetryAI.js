@@ -1,10 +1,10 @@
 /******/ (() => { // webpackBootstrap
-/******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
 
 /***/ 775
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -78,6 +78,7 @@ function handleEvent(eventType, args) {
 /***/ 777
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -124,6 +125,7 @@ async function handlePostRunEnd() {
 /***/ 980
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -205,6 +207,7 @@ async function handleReadProtocol(pluginRoot) {
 /***/ 85
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -257,6 +260,7 @@ async function handleScanAndSend() {
 /***/ 257
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.handleSendRun = handleSendRun;
@@ -277,6 +281,7 @@ async function handleSendRun(sessionId, runId) {
 /***/ 847
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -317,6 +322,7 @@ async function handleSessionEnd() {
 /***/ 234
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -348,9 +354,81 @@ async function handleSessionStart() {
 
 /***/ },
 
+/***/ 156
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const crypto_1 = __importDefault(__webpack_require__(982));
+const session_start_1 = __webpack_require__(234);
+const session_end_1 = __webpack_require__(847);
+const send_run_1 = __webpack_require__(257);
+const read_protocol_1 = __webpack_require__(980);
+const post_run_end_1 = __webpack_require__(777);
+const scan_and_send_1 = __webpack_require__(85);
+const permissions_1 = __webpack_require__(223);
+const record_1 = __webpack_require__(775);
+const [, , mode, subcommand, ...args] = process.argv;
+async function main() {
+    try {
+        if (mode === 'hook') {
+            if (subcommand === 'session-start')
+                await (0, session_start_1.handleSessionStart)();
+            else if (subcommand === 'session-end')
+                await (0, session_end_1.handleSessionEnd)();
+            else if (subcommand === 'read-protocol')
+                await (0, read_protocol_1.handleReadProtocol)(args[0]);
+            else if (subcommand === 'post-run-end')
+                await (0, post_run_end_1.handlePostRunEnd)();
+            else if (subcommand === 'scan-and-send')
+                await (0, scan_and_send_1.handleScanAndSend)();
+            else
+                throw new Error(`Unknown hook subcommand: ${subcommand}`);
+        }
+        else if (mode === 'permission') {
+            if (subcommand === 'check')
+                (0, permissions_1.handlePermissionCheck)(args[0]);
+            else if (subcommand === 'grant')
+                (0, permissions_1.handlePermissionGrant)(args[0]);
+            else
+                throw new Error(`Unknown permission subcommand: ${subcommand}`);
+        }
+        else if (mode === 'event') {
+            (0, record_1.handleEvent)(subcommand, args);
+        }
+        else if (mode === 'send-run') {
+            const sessionId = subcommand;
+            const runId = args[0];
+            if (!sessionId || !runId)
+                throw new Error('send-run requires <sessionId> <runId>');
+            await (0, send_run_1.handleSendRun)(sessionId, runId);
+        }
+        else if (mode === 'gen-run-id') {
+            process.stdout.write(crypto_1.default.randomUUID() + '\n');
+        }
+        else {
+            throw new Error('Usage: node workflowTelemetryAI.js <hook|event|permission|send-run|gen-run-id> <subcommand> [args]');
+        }
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[workflowTelemetryAI] ${message}\n`);
+        process.exit(1);
+    }
+}
+main();
+
+
+/***/ },
+
 /***/ 223
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -450,6 +528,7 @@ function handlePermissionGrant(pluginRoot) {
 /***/ 478
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -497,6 +576,7 @@ function getRunTranscriptSnapshotPath(sessionId, runId) {
 /***/ 260
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -533,9 +613,48 @@ function postJson(url, body) {
 
 /***/ },
 
+/***/ 59
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getInstallId = getInstallId;
+const fs_1 = __importDefault(__webpack_require__(896));
+const os_1 = __importDefault(__webpack_require__(857));
+const path_1 = __importDefault(__webpack_require__(928));
+const crypto_1 = __importDefault(__webpack_require__(982));
+/**
+ * Read the persistent install identifier, or generate one on first call.
+ * Lives at ~/.workflow-telemetry-ai/install-id.
+ *
+ * Anonymous, stable per machine. If the file is deleted the install will
+ * appear as new in the telemetry — that's expected behavior, not a bug.
+ */
+function getInstallId() {
+    const baseDir = path_1.default.join(os_1.default.homedir(), '.workflow-telemetry-ai');
+    const idPath = path_1.default.join(baseDir, 'install-id');
+    if (fs_1.default.existsSync(idPath)) {
+        const existing = fs_1.default.readFileSync(idPath, 'utf-8').trim();
+        if (existing)
+            return existing;
+    }
+    fs_1.default.mkdirSync(baseDir, { recursive: true });
+    const id = crypto_1.default.randomUUID();
+    fs_1.default.writeFileSync(idPath, id);
+    return id;
+}
+
+
+/***/ },
+
 /***/ 583
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -587,24 +706,19 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
     }
     const startUuid = runStartEvent.lastUuid;
     const endUuid = runEndEvent.lastUuid;
+    if (!endUuid)
+        return { transcriptData: [], events };
+    // If runStart fired before any assistant message (lastUuid=null), capture
+    // from the beginning of the transcript. Otherwise wait until we hit startUuid.
     const transcriptData = [];
-    if (startUuid && endUuid) {
-        let capturing = false;
-        for (const entry of entries) {
-            if (entry.uuid === startUuid)
-                capturing = true;
-            if (capturing) {
-                const filtered = { ...entry };
-                // Strip conversation content
-                if (filtered.message) {
-                    filtered.message = { ...filtered.message };
-                    delete filtered.message.content;
-                }
-                transcriptData.push(filtered);
-            }
-            if (entry.uuid === endUuid)
-                break;
-        }
+    let capturing = startUuid === null;
+    for (const entry of entries) {
+        if (entry.uuid === startUuid)
+            capturing = true;
+        if (capturing)
+            transcriptData.push(entry);
+        if (entry.uuid === endUuid)
+            break;
     }
     return { transcriptData, events };
 }
@@ -615,6 +729,7 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
 /***/ 885
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -623,10 +738,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sendRunData = sendRunData;
 const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
-const session_1 = __webpack_require__(214);
 const config_1 = __webpack_require__(478);
 const logs_1 = __webpack_require__(583);
 const http_1 = __webpack_require__(260);
+const install_id_1 = __webpack_require__(59);
+const transcript_sanitizer_1 = __webpack_require__(339);
+const PROTOCOL_VERSION = 1;
 async function sendRunData(sessionId, runId) {
     const runDir = (0, config_1.getRunDir)(sessionId, runId);
     const lockPath = path_1.default.join(runDir, 'sending.lock');
@@ -644,16 +761,22 @@ async function sendRunData(sessionId, runId) {
         return; // Another send in progress
     }
     try {
-        const context = (0, session_1.readSessionContext)(sessionId);
         const transcriptSnapshotPath = (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId);
         const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
-        const { transcriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
+        const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
+        // Apply per-plugin sanitizer. Defaults to mode='all' if config is missing.
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? '';
+        const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(pluginRoot, rawTranscriptData);
         const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
         const result = await (0, http_1.postJson)(serverUrl, {
+            protocolVersion: PROTOCOL_VERSION,
+            installId: (0, install_id_1.getInstallId)(),
+            platform: process.platform,
             sessionId,
             runId,
             transcriptData,
-            events
+            events,
+            transcriptSanitizer: sanitizerMetadata
         });
         if (result.status >= 200 && result.status < 300) {
             fs_1.default.writeFileSync(sentPath, '');
@@ -676,6 +799,7 @@ async function sendRunData(sessionId, runId) {
 /***/ 214
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -706,6 +830,7 @@ function getCurrentSessionId() {
 /***/ 308
 (__unused_webpack_module, exports) {
 
+"use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readStdin = readStdin;
@@ -721,9 +846,384 @@ function readStdin() {
 
 /***/ },
 
+/***/ 113
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_CONFIG = exports.CONFIG_FILENAME = void 0;
+exports.loadConfig = loadConfig;
+const fs_1 = __importDefault(__webpack_require__(896));
+const path_1 = __importDefault(__webpack_require__(928));
+const CONFIG_FILENAME = 'telemetry.config.json';
+exports.CONFIG_FILENAME = CONFIG_FILENAME;
+const DEFAULT_CONFIG = {
+    messageContent: { mode: 'all' },
+};
+exports.DEFAULT_CONFIG = DEFAULT_CONFIG;
+/**
+ * Load the sanitizer config from the plugin root, falling back to
+ * `mode: 'all'` (most-private) if anything is missing or invalid.
+ *
+ * This is the privacy-first default — plugin authors must explicitly
+ * opt in to less stripping.
+ */
+function loadConfig(pluginRoot) {
+    if (!pluginRoot)
+        return DEFAULT_CONFIG;
+    const configPath = path_1.default.join(pluginRoot, CONFIG_FILENAME);
+    if (!fs_1.default.existsSync(configPath))
+        return DEFAULT_CONFIG;
+    try {
+        const raw = fs_1.default.readFileSync(configPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        const cfg = parsed?.transcriptSanitizer;
+        if (!cfg || typeof cfg !== 'object')
+            return DEFAULT_CONFIG;
+        const mc = cfg.messageContent;
+        if (!mc || typeof mc !== 'object')
+            return DEFAULT_CONFIG;
+        const mode = mc.mode;
+        if (mode !== 'off' && mode !== 'all' && mode !== 'custom')
+            return DEFAULT_CONFIG;
+        if (mode !== 'custom')
+            return { messageContent: { mode } };
+        const filters = Array.isArray(mc.filters) ? mc.filters : [];
+        return { messageContent: { mode: 'custom', filters } };
+    }
+    catch {
+        return DEFAULT_CONFIG;
+    }
+}
+
+
+/***/ },
+
+/***/ 191
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.loadCustomFilter = loadCustomFilter;
+const path_1 = __importDefault(__webpack_require__(928));
+/**
+ * Load a custom filter function from a JS file in the plugin directory.
+ * The file must export a function (default export or module.exports = fn).
+ *
+ * Returns null if the file can't be loaded or doesn't export a function.
+ * The caller treats null as fail-safe and falls back to 'all'-mode stripping.
+ */
+function loadCustomFilter(pluginRoot, relPath) {
+    try {
+        const resolved = path_1.default.resolve(pluginRoot, relPath);
+        // require() rather than import() — keeps custom filters synchronous and
+        // simpler. Filters are small redaction functions, no async needed.
+        const mod = __webpack_require__(54)(resolved);
+        const fn = typeof mod === 'function' ? mod : mod?.default;
+        return typeof fn === 'function' ? fn : null;
+    }
+    catch {
+        return null;
+    }
+}
+
+
+/***/ },
+
+/***/ 685
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.shellFilter = void 0;
+/**
+ * Built-in "shell" filter. For string contexts representing a shell command
+ * (currently: Bash's `command` field), return first-token + second-non-flag-token.
+ *
+ * Examples:
+ *   "git checkout -b feature-secret"   -> "git checkout"
+ *   "git -C /Users/foo/secret status"  -> "git"
+ *   "npm install lodash"               -> "npm install"
+ *   "ls -la"                           -> "ls"
+ *
+ * For non-shell contexts: returns the text unchanged.
+ */
+const shellFilter = (text, context) => {
+    if (!isShellContext(context))
+        return text;
+    if (typeof text !== 'string' || text.trim() === '')
+        return text;
+    const tokens = text.trim().split(/\s+/);
+    if (tokens.length === 0)
+        return text;
+    const first = tokens[0];
+    if (!first)
+        return text;
+    if (tokens.length === 1)
+        return first;
+    const second = tokens[1];
+    if (second && !second.startsWith('-'))
+        return `${first} ${second}`;
+    return first;
+};
+exports.shellFilter = shellFilter;
+function isShellContext(context) {
+    if (context.kind !== 'tool_command')
+        return false;
+    return context.tool_name === 'Bash';
+}
+
+
+/***/ },
+
+/***/ 339
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.loadConfig = void 0;
+exports.applyTranscriptSanitizer = applyTranscriptSanitizer;
+const config_1 = __webpack_require__(113);
+const walk_1 = __webpack_require__(774);
+const shell_1 = __webpack_require__(685);
+const custom_runner_1 = __webpack_require__(191);
+/**
+ * Apply the sanitizer to a list of transcript entries.
+ * Loads config from the plugin root, resolves filters, and walks each entry.
+ *
+ * Returns both the sanitized entries and a metadata blob describing what
+ * was applied — the metadata is included in the POST payload so the server
+ * can record the scrubbing level for each trace.
+ */
+function applyTranscriptSanitizer(pluginRoot, entries) {
+    const config = (0, config_1.loadConfig)(pluginRoot);
+    const filters = resolveFilters(pluginRoot, config);
+    const out = entries.map(e => (0, walk_1.sanitizeEntry)(e, config.messageContent.mode, filters));
+    return {
+        entries: out,
+        metadata: describeApplied(config),
+    };
+}
+function resolveFilters(pluginRoot, config) {
+    if (config.messageContent.mode !== 'custom')
+        return [];
+    const filterEntries = config.messageContent.filters ?? [];
+    const resolved = [];
+    for (const entry of filterEntries) {
+        const fn = resolveFilter(pluginRoot, entry);
+        if (fn)
+            resolved.push(fn);
+    }
+    return resolved;
+}
+function resolveFilter(pluginRoot, entry) {
+    if (entry.type === 'shell')
+        return shell_1.shellFilter;
+    if (entry.type === 'custom') {
+        const fn = (0, custom_runner_1.loadCustomFilter)(pluginRoot, entry.function);
+        if (!fn) {
+            // eslint-disable-next-line no-console
+            console.warn(`[transcript-sanitizer] failed to load custom filter at ${entry.function}; skipping`);
+        }
+        return fn;
+    }
+    return null;
+}
+function describeApplied(config) {
+    const md = { mode: config.messageContent.mode };
+    if (config.messageContent.mode === 'custom') {
+        md.filters = (config.messageContent.filters ?? []).map(f => f.type === 'shell' ? { type: 'shell' } : { type: 'custom', path: f.function });
+    }
+    return md;
+}
+var config_2 = __webpack_require__(113);
+Object.defineProperty(exports, "loadConfig", ({ enumerable: true, get: function () { return config_2.loadConfig; } }));
+__exportStar(__webpack_require__(766), exports);
+
+
+/***/ },
+
+/***/ 766
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+/**
+ * Shared types for the TranscriptSanitizer module.
+ *
+ * The sanitizer redacts STRING VALUES inside transcript entries' `message.content`.
+ * Structure is always preserved — tool_use blocks stay tool_use blocks, etc.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+
+
+/***/ },
+
+/***/ 774
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.sanitizeEntry = sanitizeEntry;
+/**
+ * Sanitize a single transcript entry. Pure: returns a new entry, never mutates.
+ *
+ * mode='off'    → entry returned untouched
+ * mode='all'    → every string in message.content replaced with ''
+ * mode='custom' → each filter applied in order to every string, with context.
+ *                 If ANY filter call throws or returns non-string, the entry
+ *                 falls back to 'all' (fail-safe) and a console warning is emitted.
+ */
+function sanitizeEntry(entry, mode, filters) {
+    if (mode === 'off')
+        return entry;
+    if (!entry.message)
+        return entry;
+    if (!Array.isArray(entry.message.content))
+        return entry;
+    if (mode === 'all') {
+        return rewriteEntry(entry, 'all', []);
+    }
+    // custom
+    try {
+        return rewriteEntry(entry, 'custom', filters);
+    }
+    catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[transcript-sanitizer] custom filter failed for one entry; falling back to mode=all.', err instanceof Error ? err.message : err);
+        return rewriteEntry(entry, 'all', []);
+    }
+}
+function rewriteEntry(entry, mode, filters) {
+    const oldMessage = entry.message;
+    const newContent = oldMessage.content.map(block => rewriteBlock(block, mode, filters));
+    return {
+        ...entry,
+        message: { ...oldMessage, content: newContent },
+    };
+}
+function rewriteBlock(block, mode, filters) {
+    if (!block || typeof block !== 'object')
+        return block;
+    const b = block;
+    switch (b.type) {
+        case 'text':
+            return {
+                ...b,
+                text: applyToString(typeof b.text === 'string' ? b.text : '', { kind: 'text_block' }, mode, filters),
+            };
+        case 'tool_use':
+            return {
+                ...b,
+                input: rewriteToolInput(b.input, typeof b.name === 'string' ? b.name : '', mode, filters),
+            };
+        case 'tool_result':
+            return {
+                ...b,
+                content: rewriteToolResultContent(b.content, mode, filters),
+            };
+        default:
+            return b;
+    }
+}
+function rewriteToolInput(value, toolName, mode, filters) {
+    if (value === null || value === undefined)
+        return value;
+    if (typeof value === 'string') {
+        return applyToString(value, { kind: 'tool_input_field', tool_name: toolName, field: '' }, mode, filters);
+    }
+    if (Array.isArray(value)) {
+        return value.map((item, i) => rewriteToolInputItem(item, toolName, String(i), mode, filters));
+    }
+    if (typeof value === 'object') {
+        const out = {};
+        for (const [key, v] of Object.entries(value)) {
+            out[key] = rewriteToolInputItem(v, toolName, key, mode, filters);
+        }
+        return out;
+    }
+    return value;
+}
+function rewriteToolInputItem(value, toolName, field, mode, filters) {
+    if (typeof value === 'string') {
+        const ctx = field === 'command' && toolName === 'Bash'
+            ? { kind: 'tool_command', tool_name: toolName }
+            : { kind: 'tool_input_field', tool_name: toolName, field };
+        return applyToString(value, ctx, mode, filters);
+    }
+    // Recurse into nested objects/arrays
+    return rewriteToolInput(value, toolName, mode, filters);
+}
+function rewriteToolResultContent(content, mode, filters) {
+    if (content === null || content === undefined)
+        return content;
+    if (typeof content === 'string') {
+        return applyToString(content, { kind: 'text_block' }, mode, filters);
+    }
+    if (Array.isArray(content)) {
+        return content.map(item => {
+            if (typeof item === 'string')
+                return applyToString(item, { kind: 'text_block' }, mode, filters);
+            if (item && typeof item === 'object' && item.type === 'text') {
+                const it = item;
+                return {
+                    ...it,
+                    text: applyToString(typeof it.text === 'string' ? it.text : '', { kind: 'text_block' }, mode, filters),
+                };
+            }
+            return item;
+        });
+    }
+    return content;
+}
+function applyToString(text, context, mode, filters) {
+    if (mode === 'off')
+        return text;
+    if (mode === 'all')
+        return '';
+    // custom — apply each filter, throw on bad return (caught by sanitizeEntry's try/catch)
+    let result = text;
+    for (const fn of filters) {
+        result = fn(result, context);
+        if (typeof result !== 'string') {
+            throw new Error('filter returned non-string');
+        }
+    }
+    return result;
+}
+
+
+/***/ },
+
 /***/ 210
 (__unused_webpack_module, exports, __webpack_require__) {
 
+"use strict";
 
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -750,16 +1250,41 @@ function getLastAssistantUuid(transcriptPath) {
 
 /***/ },
 
+/***/ 54
+(module) {
+
+function webpackEmptyContext(req) {
+	var e = new Error("Cannot find module '" + req + "'");
+	e.code = 'MODULE_NOT_FOUND';
+	throw e;
+}
+webpackEmptyContext.keys = () => ([]);
+webpackEmptyContext.resolve = webpackEmptyContext;
+webpackEmptyContext.id = 54;
+module.exports = webpackEmptyContext;
+
+/***/ },
+
 /***/ 317
 (module) {
 
+"use strict";
 module.exports = require("child_process");
+
+/***/ },
+
+/***/ 982
+(module) {
+
+"use strict";
+module.exports = require("crypto");
 
 /***/ },
 
 /***/ 896
 (module) {
 
+"use strict";
 module.exports = require("fs");
 
 /***/ },
@@ -767,6 +1292,7 @@ module.exports = require("fs");
 /***/ 611
 (module) {
 
+"use strict";
 module.exports = require("http");
 
 /***/ },
@@ -774,6 +1300,7 @@ module.exports = require("http");
 /***/ 692
 (module) {
 
+"use strict";
 module.exports = require("https");
 
 /***/ },
@@ -781,6 +1308,7 @@ module.exports = require("https");
 /***/ 857
 (module) {
 
+"use strict";
 module.exports = require("os");
 
 /***/ },
@@ -788,6 +1316,7 @@ module.exports = require("os");
 /***/ 928
 (module) {
 
+"use strict";
 module.exports = require("path");
 
 /***/ }
@@ -819,69 +1348,17 @@ module.exports = require("path");
 /******/ 	}
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
-// This entry needs to be wrapped in an IIFE because it uses a non-standard name for the exports (exports).
-(() => {
-var exports = __webpack_exports__;
-var __webpack_unused_export__;
-
-__webpack_unused_export__ = ({ value: true });
-const session_start_1 = __webpack_require__(234);
-const session_end_1 = __webpack_require__(847);
-const send_run_1 = __webpack_require__(257);
-const read_protocol_1 = __webpack_require__(980);
-const post_run_end_1 = __webpack_require__(777);
-const scan_and_send_1 = __webpack_require__(85);
-const permissions_1 = __webpack_require__(223);
-const record_1 = __webpack_require__(775);
-const [, , mode, subcommand, ...args] = process.argv;
-async function main() {
-    try {
-        if (mode === 'hook') {
-            if (subcommand === 'session-start')
-                await (0, session_start_1.handleSessionStart)();
-            else if (subcommand === 'session-end')
-                await (0, session_end_1.handleSessionEnd)();
-            else if (subcommand === 'read-protocol')
-                await (0, read_protocol_1.handleReadProtocol)(args[0]);
-            else if (subcommand === 'post-run-end')
-                await (0, post_run_end_1.handlePostRunEnd)();
-            else if (subcommand === 'scan-and-send')
-                await (0, scan_and_send_1.handleScanAndSend)();
-            else
-                throw new Error(`Unknown hook subcommand: ${subcommand}`);
-        }
-        else if (mode === 'permission') {
-            if (subcommand === 'check')
-                (0, permissions_1.handlePermissionCheck)(args[0]);
-            else if (subcommand === 'grant')
-                (0, permissions_1.handlePermissionGrant)(args[0]);
-            else
-                throw new Error(`Unknown permission subcommand: ${subcommand}`);
-        }
-        else if (mode === 'event') {
-            (0, record_1.handleEvent)(subcommand, args);
-        }
-        else if (mode === 'send-run') {
-            const sessionId = subcommand;
-            const runId = args[0];
-            if (!sessionId || !runId)
-                throw new Error('send-run requires <sessionId> <runId>');
-            await (0, send_run_1.handleSendRun)(sessionId, runId);
-        }
-        else {
-            throw new Error('Usage: node workflowTelemetryAI.js <hook|event|permission|send-run> <subcommand> [args]');
-        }
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[workflowTelemetryAI] ${message}\n`);
-        process.exit(1);
-    }
-}
-main();
-
-})();
-
+/******/ 	/* webpack/runtime/hasOwnProperty shorthand */
+/******/ 	(() => {
+/******/ 		__webpack_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
+/******/ 	})();
+/******/ 	
+/************************************************************************/
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module is referenced by other modules so it can't be inlined
+/******/ 	var __webpack_exports__ = __webpack_require__(156);
+/******/ 	
 /******/ })()
 ;

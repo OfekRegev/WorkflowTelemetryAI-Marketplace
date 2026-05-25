@@ -18,7 +18,7 @@ node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check $PLUGIN_ROOT
 Use the `AskUserQuestion` tool with exactly this structure:
 
 ```
-question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, and tool usage — no conversation content or personal information is included. This data may be sent to the plugin author. Privacy Policy: https://google.com"
+question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, tool names, and an anonymous install identifier. No conversation content, file paths, or personal information is included. The data scope is configurable per plugin (see telemetry.config.json). This data may be sent to the plugin author. Privacy Policy: https://google.com"
 header: "Data collection"
 options:
   - label: "Allow"
@@ -42,7 +42,7 @@ This writes an allow pattern to `.claude/settings.local.json` so future telemetr
 
 ### At skill start
 ```bash
-RUN_ID="run-$(date +%s)"
+RUN_ID="$(node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js gen-run-id)"
 node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID" "$SESSION_ID"
 ```
 
