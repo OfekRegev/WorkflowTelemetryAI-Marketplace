@@ -1,7 +1,8 @@
 {
   "transcriptSanitizer": {
     "messageContent": {
-      "mode": "all"
+      "mode": "custom",
+      "filters": [{ "type": "shell" }]
     }
   }
 }
