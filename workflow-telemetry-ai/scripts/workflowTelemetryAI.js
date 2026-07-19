@@ -744,6 +744,28 @@ const http_1 = __webpack_require__(260);
 const install_id_1 = __webpack_require__(59);
 const transcript_sanitizer_1 = __webpack_require__(339);
 const PROTOCOL_VERSION = 1;
+/**
+ * Resolve the plugin root for config loading.
+ *
+ * The bundle always ships at <pluginRoot>/scripts/workflowTelemetryAI.js, so the
+ * running script's own location is the authoritative source — it works for every
+ * trigger path (hook-spawned detached sends, direct CLI calls) and is always
+ * consistent with the bundle version actually executing.
+ *
+ * CLAUDE_PLUGIN_ROOT is honored as an explicit override when set (tests, manual
+ * runs), but hook-spawned children do NOT inherit it from Claude Code — relying
+ * on it alone made loadConfig silently fall back to mode='all' on every real
+ * send (bug found 2026-07-19).
+ */
+function resolvePluginRoot() {
+    const envRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    if (envRoot)
+        return envRoot;
+    const scriptPath = process.argv[1];
+    if (!scriptPath)
+        return '';
+    return path_1.default.resolve(path_1.default.dirname(scriptPath), '..');
+}
 async function sendRunData(sessionId, runId) {
     const runDir = (0, config_1.getRunDir)(sessionId, runId);
     const lockPath = path_1.default.join(runDir, 'sending.lock');
@@ -765,8 +787,7 @@ async function sendRunData(sessionId, runId) {
         const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
         const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
         // Apply per-plugin sanitizer. Defaults to mode='all' if config is missing.
-        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? '';
-        const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(pluginRoot, rawTranscriptData);
+        const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(resolvePluginRoot(), rawTranscriptData);
         const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
         const result = await (0, http_1.postJson)(serverUrl, {
             protocolVersion: PROTOCOL_VERSION,
@@ -947,13 +968,20 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.shellFilter = void 0;
 /**
  * Built-in "shell" filter. For string contexts representing a shell command
- * (currently: Bash's `command` field), return first-token + second-non-flag-token.
+ * (currently: Bash's `command` field), return first-token + second-non-flag-token,
+ * with each kept token scrubbed of path and value content:
+ *
+ * - Path-like tokens are reduced to their basename (a full path can embed the
+ *   OS username or project locations — e.g. "C:\Users\alice\proj\run.js" -> "run.js")
+ * - Env-var assignments keep only the variable name ("API_KEY=secret" -> "API_KEY=")
  *
  * Examples:
- *   "git checkout -b feature-secret"   -> "git checkout"
- *   "git -C /Users/foo/secret status"  -> "git"
- *   "npm install lodash"               -> "npm install"
- *   "ls -la"                           -> "ls"
+ *   "git checkout -b feature-secret"            -> "git checkout"
+ *   "git -C /Users/foo/secret status"           -> "git"
+ *   "npm install lodash"                        -> "npm install"
+ *   "ls -la"                                    -> "ls"
+ *   'node "C:\Users\a\plugin\scripts\x.js"'     -> "node x.js"
+ *   'RUN_ID="run-$(date +%s)"'                  -> "RUN_ID="
  *
  * For non-shell contexts: returns the text unchanged.
  */
@@ -965,17 +993,39 @@ const shellFilter = (text, context) => {
     const tokens = text.trim().split(/\s+/);
     if (tokens.length === 0)
         return text;
-    const first = tokens[0];
+    const first = tokens[0] ? scrubToken(tokens[0]) : '';
     if (!first)
         return text;
+    // If the first token is an env-var assignment, everything after it is part of
+    // the value (whitespace inside quotes splits into fragments) — keep nothing else.
+    if (first.endsWith('='))
+        return first;
     if (tokens.length === 1)
         return first;
     const second = tokens[1];
     if (second && !second.startsWith('-'))
-        return `${first} ${second}`;
+        return `${first} ${scrubToken(second)}`;
     return first;
 };
 exports.shellFilter = shellFilter;
+/**
+ * Scrub a single kept token so it cannot leak paths or assignment values.
+ */
+function scrubToken(token) {
+    // Env-var assignment: keep only the name ("API_KEY=secret" -> "API_KEY=")
+    const assignMatch = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (assignMatch)
+        return `${assignMatch[1]}=`;
+    // Strip surrounding quotes before path detection
+    const unquoted = token.replace(/^['"]|['"]$/g, '');
+    // Path-like: reduce to basename ("C:\Users\a\x.js" -> "x.js", "/usr/bin/env" -> "env")
+    if (/[\\/]/.test(unquoted) || /^[A-Za-z]:/.test(unquoted)) {
+        const segments = unquoted.split(/[\\/]/);
+        const base = segments[segments.length - 1];
+        return base || unquoted;
+    }
+    return unquoted;
+}
 function isShellContext(context) {
     if (context.kind !== 'tool_command')
         return false;
