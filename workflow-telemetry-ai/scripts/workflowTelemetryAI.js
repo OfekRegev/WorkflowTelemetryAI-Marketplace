@@ -924,6 +924,27 @@ function loadConfig(pluginRoot) {
 
 /***/ },
 
+/***/ 313
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.askUserQuestionFilter = void 0;
+/**
+ * Built-in "askUserQuestion" filter. Identity — passes text through
+ * unchanged. AskUserQuestion's question/header/option text is the agent's
+ * own generated UI text, not user data or file content, so it's exempted
+ * from the default-deny fallback via this explicit allow rather than a
+ * silent carve-out in the walk logic. Scoping to the AskUserQuestion tool
+ * is done by the caller's match predicate (see index.ts), not here.
+ */
+const askUserQuestionFilter = (text) => text;
+exports.askUserQuestionFilter = askUserQuestionFilter;
+
+
+/***/ },
+
 /***/ 191
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -959,13 +980,70 @@ function loadCustomFilter(pluginRoot, relPath) {
 
 /***/ },
 
-/***/ 685
+/***/ 285
 (__unused_webpack_module, exports) {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toBasename = toBasename;
+/**
+ * Reduce a path-like string to its final path segment (basename).
+ *
+ * A full path can embed the OS username or project locations —
+ * e.g. "C:\Users\alice\proj\run.js" -> "run.js", "/usr/bin/env" -> "env".
+ * Strips surrounding quotes first. Non-path-like input passes through
+ * unchanged (quotes still stripped).
+ */
+function toBasename(token) {
+    const unquoted = token.replace(/^['"]|['"]$/g, '');
+    if (/[\\/]/.test(unquoted) || /^[A-Za-z]:/.test(unquoted)) {
+        const segments = unquoted.split(/[\\/]/);
+        const base = segments[segments.length - 1];
+        return base || unquoted;
+    }
+    return unquoted;
+}
+
+
+/***/ },
+
+/***/ 432
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.pathFilter = void 0;
+const basename_1 = __webpack_require__(285);
+/**
+ * Built-in "path" filter. For `tool_input_field` contexts, reduces the
+ * string to its basename — a full path can embed the OS username or
+ * project layout (e.g. "C:\Users\alice\proj\notes.txt" -> "notes.txt").
+ *
+ * Which fields this runs on is decided by the caller's match predicate
+ * (see index.ts's `path` filter resolution, config's `fields` list) —
+ * this function assumes it's only ever called for a field the caller
+ * already decided is path-shaped.
+ */
+const pathFilter = (text) => {
+    if (typeof text !== 'string' || text === '')
+        return text;
+    return (0, basename_1.toBasename)(text);
+};
+exports.pathFilter = pathFilter;
+
+
+/***/ },
+
+/***/ 685
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.shellFilter = void 0;
+const basename_1 = __webpack_require__(285);
 /**
  * Built-in "shell" filter. For string contexts representing a shell command
  * (currently: Bash's `command` field), return first-token + second-non-flag-token,
@@ -1016,15 +1094,7 @@ function scrubToken(token) {
     const assignMatch = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
     if (assignMatch)
         return `${assignMatch[1]}=`;
-    // Strip surrounding quotes before path detection
-    const unquoted = token.replace(/^['"]|['"]$/g, '');
-    // Path-like: reduce to basename ("C:\Users\a\x.js" -> "x.js", "/usr/bin/env" -> "env")
-    if (/[\\/]/.test(unquoted) || /^[A-Za-z]:/.test(unquoted)) {
-        const segments = unquoted.split(/[\\/]/);
-        const base = segments[segments.length - 1];
-        return base || unquoted;
-    }
-    return unquoted;
+    return (0, basename_1.toBasename)(token);
 }
 function isShellContext(context) {
     if (context.kind !== 'tool_command')
@@ -1060,7 +1130,10 @@ exports.applyTranscriptSanitizer = applyTranscriptSanitizer;
 const config_1 = __webpack_require__(113);
 const walk_1 = __webpack_require__(774);
 const shell_1 = __webpack_require__(685);
+const path_1 = __webpack_require__(432);
+const ask_user_question_1 = __webpack_require__(313);
 const custom_runner_1 = __webpack_require__(191);
+const DEFAULT_PATH_FIELDS = ['file_path', 'path', 'notebook_path'];
 /**
  * Apply the sanitizer to a list of transcript entries.
  * Loads config from the plugin root, resolves filters, and walks each entry.
@@ -1084,29 +1157,67 @@ function resolveFilters(pluginRoot, config) {
     const filterEntries = config.messageContent.filters ?? [];
     const resolved = [];
     for (const entry of filterEntries) {
-        const fn = resolveFilter(pluginRoot, entry);
-        if (fn)
-            resolved.push(fn);
+        const rf = resolveFilter(pluginRoot, entry);
+        if (rf)
+            resolved.push(rf);
     }
     return resolved;
 }
 function resolveFilter(pluginRoot, entry) {
-    if (entry.type === 'shell')
-        return shell_1.shellFilter;
+    if (entry.type === 'shell') {
+        return { fn: shell_1.shellFilter, match: isBashCommandContext };
+    }
+    if (entry.type === 'path') {
+        const fields = entry.fields ?? DEFAULT_PATH_FIELDS;
+        return { fn: path_1.pathFilter, match: makeFieldMatcher(fields) };
+    }
+    if (entry.type === 'askUserQuestion') {
+        return { fn: ask_user_question_1.askUserQuestionFilter, match: isAskUserQuestionContext };
+    }
     if (entry.type === 'custom') {
         const fn = (0, custom_runner_1.loadCustomFilter)(pluginRoot, entry.function);
         if (!fn) {
             // eslint-disable-next-line no-console
             console.warn(`[transcript-sanitizer] failed to load custom filter at ${entry.function}; skipping`);
+            return null;
         }
-        return fn;
+        return { fn, match: entry.match ? compileMatch(entry.match) : () => true };
     }
     return null;
+}
+function isBashCommandContext(context) {
+    return context.kind === 'tool_command' && context.tool_name === 'Bash';
+}
+function isAskUserQuestionContext(context) {
+    return (context.kind === 'tool_command' || context.kind === 'tool_input_field')
+        && context.tool_name === 'AskUserQuestion';
+}
+function makeFieldMatcher(fields) {
+    return (context) => context.kind === 'tool_input_field' && fields.includes(context.field);
+}
+function compileMatch(match) {
+    return (context) => {
+        if (match.kinds && !match.kinds.includes(context.kind))
+            return false;
+        if (match.tools) {
+            const toolName = context.kind === 'tool_command' || context.kind === 'tool_input_field'
+                ? context.tool_name
+                : undefined;
+            if (!toolName || !match.tools.includes(toolName))
+                return false;
+        }
+        if (match.fields) {
+            const field = context.kind === 'tool_input_field' ? context.field : undefined;
+            if (!field || !match.fields.includes(field))
+                return false;
+        }
+        return true;
+    };
 }
 function describeApplied(config) {
     const md = { mode: config.messageContent.mode };
     if (config.messageContent.mode === 'custom') {
-        md.filters = (config.messageContent.filters ?? []).map(f => f.type === 'shell' ? { type: 'shell' } : { type: 'custom', path: f.function });
+        md.filters = (config.messageContent.filters ?? []).map(f => f.type === 'custom' ? { type: 'custom', path: f.function } : { type: f.type });
     }
     return md;
 }
@@ -1145,9 +1256,13 @@ exports.sanitizeEntry = sanitizeEntry;
  *
  * mode='off'    → entry returned untouched
  * mode='all'    → every string in message.content replaced with ''
- * mode='custom' → each filter applied in order to every string, with context.
- *                 If ANY filter call throws or returns non-string, the entry
- *                 falls back to 'all' (fail-safe) and a console warning is emitted.
+ * mode='custom' → each matching filter applied in order to every string, with
+ *                 context. A `tool_command`/`tool_input_field` string that no
+ *                 configured filter's match predicate claims is redacted by
+ *                 default (fail-closed) rather than passed through raw — see
+ *                 applyToString. If ANY filter call throws or returns
+ *                 non-string, the entry falls back to 'all' (fail-safe) and a
+ *                 console warning is emitted.
  */
 function sanitizeEntry(entry, mode, filters) {
     if (mode === 'off')
@@ -1256,13 +1371,24 @@ function applyToString(text, context, mode, filters) {
         return text;
     if (mode === 'all')
         return '';
-    // custom — apply each filter, throw on bad return (caught by sanitizeEntry's try/catch)
+    // custom — run each filter whose match predicate claims this context, in order.
+    // Throws on bad return (caught by sanitizeEntry's try/catch).
     let result = text;
-    for (const fn of filters) {
+    let matched = false;
+    for (const { fn, match } of filters) {
+        if (!match(context))
+            continue;
+        matched = true;
         result = fn(result, context);
         if (typeof result !== 'string') {
             throw new Error('filter returned non-string');
         }
+    }
+    // Fail-closed: a tool_command/tool_input_field string that no configured
+    // filter claimed is redacted, not passed through raw. text_block is left
+    // out of this fallback deliberately — see walk.ts module docstring.
+    if (!matched && (context.kind === 'tool_command' || context.kind === 'tool_input_field')) {
+        return '';
     }
     return result;
 }

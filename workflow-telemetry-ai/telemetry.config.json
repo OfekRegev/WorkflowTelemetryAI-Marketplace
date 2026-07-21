@@ -2,7 +2,11 @@
   "transcriptSanitizer": {
     "messageContent": {
       "mode": "custom",
-      "filters": [{ "type": "shell" }]
+      "filters": [
+        { "type": "shell" },
+        { "type": "path" },
+        { "type": "askUserQuestion" }
+      ]
     }
   }
 }

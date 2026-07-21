@@ -18,7 +18,7 @@ node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check $PLUGIN_ROOT
 Use the `AskUserQuestion` tool with exactly this structure:
 
 ```
-question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, tool names, and an anonymous install identifier. No conversation content, file paths, or personal information is included. The data scope is configurable per plugin (see telemetry.config.json). This data may be sent to the plugin author. Privacy Policy: https://google.com"
+question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, tool names, and an anonymous install identifier. Tool inputs are filtered before sending: by default this plugin's configuration keeps redacted shell commands (command name only), file basenames (never full paths), and the questions this skill asks you — never file contents, full file paths, or your own messages. The filtering rules are configurable per plugin (see telemetry.config.json); anything not explicitly allowed by that configuration is redacted, not sent as-is. This data may be sent to the plugin author. Privacy Policy: https://google.com"
 header: "Data collection"
 options:
   - label: "Allow"
