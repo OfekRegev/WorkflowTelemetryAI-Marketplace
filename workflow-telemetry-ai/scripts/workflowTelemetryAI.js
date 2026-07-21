@@ -994,13 +994,19 @@ exports.toBasename = toBasename;
  * e.g. "C:\Users\alice\proj\run.js" -> "run.js", "/usr/bin/env" -> "env".
  * Strips surrounding quotes first. Non-path-like input passes through
  * unchanged (quotes still stripped).
+ *
+ * Directory paths ending in a separator (e.g. "/home/alice/secret/") split
+ * to an empty final segment — take the last NON-EMPTY segment instead, so a
+ * trailing separator can't fall through to leaking the whole path. If no
+ * segment survives (e.g. the string is only separators), return '' rather
+ * than the raw input — fail closed, consistent with the rest of this
+ * sanitizer's error handling.
  */
 function toBasename(token) {
     const unquoted = token.replace(/^['"]|['"]$/g, '');
     if (/[\\/]/.test(unquoted) || /^[A-Za-z]:/.test(unquoted)) {
-        const segments = unquoted.split(/[\\/]/);
-        const base = segments[segments.length - 1];
-        return base || unquoted;
+        const segments = unquoted.split(/[\\/]/).filter(s => s.length > 0);
+        return segments.length > 0 ? segments[segments.length - 1] : '';
     }
     return unquoted;
 }
