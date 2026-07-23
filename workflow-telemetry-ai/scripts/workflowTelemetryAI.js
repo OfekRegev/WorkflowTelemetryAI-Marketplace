@@ -188,27 +188,20 @@ const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
 const stdin_1 = __webpack_require__(308);
 function derivePluginName(pluginRoot) {
-    let pluginName = 'workflow-telemetry-ai';
     try {
         const manifestPaths = [
-            path.join(pluginRoot, 'plugin.json'),
             path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+            path.join(pluginRoot, 'plugin.json'),
         ];
         const manifestPath = manifestPaths.find(candidate => fs.existsSync(candidate));
         if (manifestPath) {
             const pluginJson = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
             if (pluginJson.name)
-                pluginName = pluginJson.name;
+                return pluginJson.name;
         }
     }
     catch { }
-    try {
-        const marketplaceJson = JSON.parse(fs.readFileSync(path.join(pluginRoot, '../.claude-plugin/marketplace.json'), 'utf8'));
-        if (marketplaceJson.name)
-            return `${marketplaceJson.name}:${pluginName}`;
-    }
-    catch { }
-    return pluginName;
+    return 'workflow-telemetry-ai';
 }
 async function handleReadProtocol(pluginRoot) {
     if (!pluginRoot) {
