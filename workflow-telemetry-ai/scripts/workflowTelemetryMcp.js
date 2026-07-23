@@ -6217,6 +6217,9 @@ function getCapturedConsent(context = {}) {
     return record?.status === 'captured' ? record.decision : null;
 }
 function captureConsent(decision, context = {}) {
+    const existing = readStore()[consentKey(context)];
+    if (existing?.status !== 'captured' && existing?.decision === decision)
+        return;
     writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'captured' }, context);
 }
 function confirmConsent(decision, context = {}) {
@@ -34677,8 +34680,19 @@ function failure(error, runId = '') {
     };
     return toolResult(result);
 }
-function consentRequired(runId = '') {
-    const consent = (0, consent_1.getConsent)();
+function consentContext(sessionId) {
+    try {
+        return {
+            projectDir: (0, session_1.readSessionContext)(sessionId).projectDir,
+            pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
+        };
+    }
+    catch {
+        return { pluginRoot: process.env.CLAUDE_PLUGIN_ROOT };
+    }
+}
+function consentRequired(sessionId, runId = '') {
+    const consent = (0, consent_1.getConsent)(consentContext(sessionId));
     if (consent === 'allow')
         return null;
     return {
@@ -34709,13 +34723,17 @@ server.registerTool('telemetry_set_consent', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, decision }) => {
+    let session;
     try {
-        (0, session_1.readSessionContext)(sessionId);
+        session = (0, session_1.readSessionContext)(sessionId);
     }
     catch (error) {
         return failure(error);
     }
-    if (!(0, consent_1.confirmConsent)(decision)) {
+    if (!(0, consent_1.confirmConsent)(decision, {
+        projectDir: session.projectDir,
+        pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
+    })) {
         return failure(new Error('Consent decision was not captured from the analytics disclosure.'));
     }
     const allowed = decision === 'allow';
@@ -34742,7 +34760,7 @@ server.registerTool('telemetry_run_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, skillId }) => {
-    const required = consentRequired();
+    const required = consentRequired(sessionId);
     if (required)
         return toolResult(required);
     try {
@@ -34758,7 +34776,7 @@ server.registerTool('telemetry_step_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const required = consentRequired(runId);
+    const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
     try {
@@ -34774,7 +34792,7 @@ server.registerTool('telemetry_step_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const required = consentRequired(runId);
+    const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
     try {
@@ -34790,7 +34808,7 @@ server.registerTool('telemetry_run_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, status }) => {
-    const required = consentRequired(runId);
+    const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
     try {
