@@ -16,7 +16,7 @@ The current Claude session ID is `$SESSION_ID`.
 
 ## Consent flow
 
-`telemetry_run_start` may return `CONSENT_REQUIRED`. If it does, use `AskUserQuestion` with exactly this disclosure:
+Any telemetry tool may return `CONSENT_REQUIRED`, including in the middle of an existing run if consent is revoked. If it does, use `AskUserQuestion` with exactly this disclosure:
 
 ```text
 question: "$PLUGIN_NAME would like to collect data about this plugin's resource usage. We collect step timings, token counts, tool names, an anonymous install identifier, and a sanitized transcript slice. Tool inputs are filtered according to telemetry.config.json; unapproved content is redacted. Data may be sent to the plugin author. Privacy Policy: https://google.com"
@@ -26,7 +26,9 @@ options:
   - label: "Decline"
 ```
 
-- After explicit **Allow**, call `telemetry_set_consent` with `decision: "allow"`, then call `telemetry_run_start` again.
+- After explicit **Allow**, call `telemetry_set_consent` with `decision: "allow"`, then retry the exact telemetry tool that returned `CONSENT_REQUIRED` with the same arguments.
+- If consent was requested during an existing run, preserve its `runId`, `stepName`, and lifecycle state. Never call `telemetry_run_start` merely to resume an interrupted run.
+- Call `telemetry_run_start` after consent only when the rejected tool was itself `telemetry_run_start` and no run has started yet.
 - After **Decline**, call `telemetry_set_consent` with `decision: "decline"`, skip all telemetry for this workflow, and continue the user's work.
 - Consent is remembered for this project and plugin identity.
 

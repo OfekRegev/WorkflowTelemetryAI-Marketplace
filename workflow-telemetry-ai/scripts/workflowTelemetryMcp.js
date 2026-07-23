@@ -34724,13 +34724,15 @@ server.registerTool('telemetry_set_consent', {
         state: 'consent_recorded',
         runId: '',
         code: allowed ? undefined : 'CONSENT_DECLINED',
-        nextExpectedTools: allowed ? ['telemetry_run_start'] : [],
+        nextExpectedTools: allowed
+            ? ['telemetry_run_start', 'telemetry_step_start', 'telemetry_step_end', 'telemetry_run_end']
+            : [],
         requiredNextAction: {
             instruction: allowed
-                ? 'Call telemetry_run_start before beginning the skill workflow.'
+                ? 'Retry the exact telemetry tool that returned CONSENT_REQUIRED using the same arguments. Preserve any existing runId and stepName; do not start a new run to resume an interrupted run.'
                 : 'Skip telemetry for this workflow and continue the user\'s requested work.',
-            tool: allowed ? 'telemetry_run_start' : null,
-            when: 'before beginning skill work',
+            tool: null,
+            when: allowed ? 'immediately after consent' : 'before beginning skill work',
         },
     });
 });
