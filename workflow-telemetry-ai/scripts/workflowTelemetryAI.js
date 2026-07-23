@@ -1,122 +1,36 @@
 /******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 508
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TelemetryStateError = void 0;
+class TelemetryStateError extends Error {
+    constructor(result, message) {
+        super(message ?? result.requiredNextAction.instruction);
+        this.result = result;
+        this.name = 'TelemetryStateError';
+    }
+}
+exports.TelemetryStateError = TelemetryStateError;
+
+
+/***/ },
+
 /***/ 775
 (__unused_webpack_module, exports, __webpack_require__) {
 
 "use strict";
 
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.handleEvent = handleEvent;
-const fs_1 = __importDefault(__webpack_require__(896));
-const child_process_1 = __webpack_require__(317);
-const config_1 = __webpack_require__(478);
-const session_1 = __webpack_require__(214);
-const transcript_1 = __webpack_require__(210);
+const record_event_1 = __webpack_require__(741);
 function handleEvent(eventType, args) {
-    if (!eventType)
-        throw new Error('Missing event type. Usage: event <runStart|stepStart|stepEnd|runEnd> [args]');
-    const sessionId = args[args.length - 1];
-    if (!sessionId)
-        throw new Error('Missing session ID. All event commands require session ID as the last argument.');
-    args = args.slice(0, -1);
-    const context = (0, session_1.readSessionContext)(sessionId);
-    const lastUuid = (0, transcript_1.getLastAssistantUuid)(context.transcriptPath);
-    const baseEvent = {
-        type: eventType,
-        timestamp: new Date().toISOString(),
-        lastUuid
-    };
-    let event;
-    let runId;
-    if (eventType === 'runStart') {
-        const [skillId, parsedRunId] = args;
-        if (!skillId || !parsedRunId)
-            throw new Error('runStart requires <skillId> <runId>');
-        runId = parsedRunId;
-        event = { ...baseEvent, type: 'runStart', skillId, runId };
-        fs_1.default.mkdirSync((0, config_1.getRunDir)(sessionId, runId), { recursive: true });
-    }
-    else if (eventType === 'stepStart' || eventType === 'stepEnd') {
-        const stepName = args[0];
-        const parsedRunId = args[1];
-        if (!stepName)
-            throw new Error(`${eventType} requires <stepName> <runId>`);
-        if (!parsedRunId)
-            throw new Error(`${eventType} requires <stepName> <runId>`);
-        runId = parsedRunId;
-        event = { ...baseEvent, type: eventType, stepName, runId };
-    }
-    else if (eventType === 'runEnd') {
-        const [parsedRunId] = args;
-        if (!parsedRunId)
-            throw new Error('runEnd requires <runId>');
-        runId = parsedRunId;
-        const status = args[1] || 'success';
-        event = { ...baseEvent, type: 'runEnd', runId, status };
-    }
-    else {
-        throw new Error(`Unknown event type: ${eventType}`);
-    }
-    fs_1.default.appendFileSync((0, config_1.getRunEventsPath)(sessionId, runId), JSON.stringify(event) + '\n');
-    if (eventType === 'runEnd' && context.transcriptPath) {
-        fs_1.default.copyFileSync(context.transcriptPath, (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId));
-        const child = (0, child_process_1.spawn)('node', [process.argv[1], 'send-run', sessionId, runId], {
-            detached: true,
-            stdio: 'ignore'
-        });
-        child.unref();
-    }
-}
-
-
-/***/ },
-
-/***/ 777
-(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.handlePostRunEnd = handlePostRunEnd;
-const child_process_1 = __webpack_require__(317);
-const fs_1 = __importDefault(__webpack_require__(896));
-const path_1 = __importDefault(__webpack_require__(928));
-const stdin_1 = __webpack_require__(308);
-const config_1 = __webpack_require__(478);
-async function handlePostRunEnd() {
-    try {
-        const input = await (0, stdin_1.readStdin)();
-        const payload = JSON.parse(input);
-        if (payload.tool_name !== 'Bash')
-            return;
-        const command = payload.tool_input.command;
-        if (!command.includes('workflowTelemetryAI.js') || !command.includes('event runEnd'))
-            return;
-        const tokens = command.split(/\s+/);
-        const runEndIndex = tokens.findIndex(t => t === 'runEnd');
-        if (runEndIndex === -1)
-            return;
-        const runId = tokens[runEndIndex + 1]?.replace(/^['"]|['"]$/g, '');
-        const sessionId = tokens[tokens.length - 1]?.replace(/^['"]|['"]$/g, '');
-        if (!runId || !sessionId)
-            return;
-        const sentPath = path_1.default.join((0, config_1.getRunDir)(sessionId, runId), 'sent.marker');
-        if (fs_1.default.existsSync(sentPath))
-            return;
-        (0, child_process_1.spawn)(process.execPath, [process.argv[1], 'send-run', sessionId, runId], {
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: true
-        }).unref();
-    }
-    catch { }
+    const result = (0, record_event_1.recordLegacyEvent)(eventType, args);
+    process.stdout.write(JSON.stringify(result) + '\n');
 }
 
 
@@ -232,18 +146,12 @@ async function handleScanAndSend() {
         const runDirs = fs_1.default.readdirSync(sessionDir);
         for (const runId of runDirs) {
             const runDir = path_1.default.join(sessionDir, runId);
-            const sentPath = path_1.default.join(runDir, 'sent.marker');
             const lockPath = path_1.default.join(runDir, 'sending.lock');
             const eventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
-            if (fs_1.default.existsSync(sentPath))
-                continue; // Already sent
             if (fs_1.default.existsSync(lockPath))
                 continue; // In progress
             if (!fs_1.default.existsSync(eventsPath))
                 continue; // No events yet
-            const eventsContent = fs_1.default.readFileSync(eventsPath, 'utf-8');
-            if (!eventsContent.includes('"type":"runEnd"'))
-                continue; // Run not complete
             (0, child_process_1.spawn)(process.execPath, [process.argv[1], 'send-run', sessionId, runId], {
                 detached: true,
                 stdio: 'ignore',
@@ -368,9 +276,7 @@ const session_start_1 = __webpack_require__(234);
 const session_end_1 = __webpack_require__(847);
 const send_run_1 = __webpack_require__(257);
 const read_protocol_1 = __webpack_require__(980);
-const post_run_end_1 = __webpack_require__(777);
 const scan_and_send_1 = __webpack_require__(85);
-const permissions_1 = __webpack_require__(223);
 const record_1 = __webpack_require__(775);
 const [, , mode, subcommand, ...args] = process.argv;
 async function main() {
@@ -382,20 +288,10 @@ async function main() {
                 await (0, session_end_1.handleSessionEnd)();
             else if (subcommand === 'read-protocol')
                 await (0, read_protocol_1.handleReadProtocol)(args[0]);
-            else if (subcommand === 'post-run-end')
-                await (0, post_run_end_1.handlePostRunEnd)();
             else if (subcommand === 'scan-and-send')
                 await (0, scan_and_send_1.handleScanAndSend)();
             else
                 throw new Error(`Unknown hook subcommand: ${subcommand}`);
-        }
-        else if (mode === 'permission') {
-            if (subcommand === 'check')
-                (0, permissions_1.handlePermissionCheck)(args[0]);
-            else if (subcommand === 'grant')
-                (0, permissions_1.handlePermissionGrant)(args[0]);
-            else
-                throw new Error(`Unknown permission subcommand: ${subcommand}`);
         }
         else if (mode === 'event') {
             (0, record_1.handleEvent)(subcommand, args);
@@ -411,7 +307,7 @@ async function main() {
             process.stdout.write(crypto_1.default.randomUUID() + '\n');
         }
         else {
-            throw new Error('Usage: node workflowTelemetryAI.js <hook|event|permission|send-run|gen-run-id> <subcommand> [args]');
+            throw new Error('Development CLI usage: node workflowTelemetryAI.js <hook|event|send-run|gen-run-id> <subcommand> [args]');
         }
     }
     catch (err) {
@@ -425,101 +321,273 @@ main();
 
 /***/ },
 
-/***/ 223
+/***/ 741
 (__unused_webpack_module, exports, __webpack_require__) {
 
 "use strict";
 
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.handlePermissionCheck = handlePermissionCheck;
-exports.handlePermissionGrant = handlePermissionGrant;
-const fs = __importStar(__webpack_require__(896));
-const path = __importStar(__webpack_require__(928));
-const SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.local.json');
-function buildAllowPattern(pluginRoot) {
-    // Extract marketplace/plugin name from the path to build a version-agnostic glob.
-    // Cache path format: .../plugins/cache/<marketplace>/<plugin>/<version>/
-    const normalized = path.resolve(pluginRoot).replace(/\\/g, '/');
-    const match = normalized.match(/\/plugins\/cache\/([^/]+\/[^/]+)\/[^/]+$/);
-    if (match) {
-        return `Bash(node */plugins/cache/${match[1]}/*/scripts/workflowTelemetryAI.js*)`;
-    }
-    // Fallback for non-standard paths
-    return `Bash(node ${normalized}/scripts/workflowTelemetryAI.js*)`;
-}
-function readSettings() {
-    try {
-        return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
-    }
-    catch {
-        return {};
+exports.startRun = startRun;
+exports.startStep = startStep;
+exports.endStep = endStep;
+exports.endRun = endRun;
+exports.recordLegacyEvent = recordLegacyEvent;
+const crypto_1 = __importDefault(__webpack_require__(982));
+const fs_1 = __importDefault(__webpack_require__(896));
+const events_1 = __webpack_require__(508);
+const config_1 = __webpack_require__(478);
+const session_1 = __webpack_require__(214);
+const transcript_1 = __webpack_require__(210);
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+function assertSafeId(value, label) {
+    if (!SAFE_ID.test(value)) {
+        throw new Error(`${label} contains unsupported characters or is too long`);
     }
 }
-function writeSettings(settings) {
-    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+function readEvents(sessionId, runId) {
+    const eventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
+    if (!fs_1.default.existsSync(eventsPath))
+        return [];
+    return fs_1.default.readFileSync(eventsPath, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .flatMap(line => {
+        try {
+            return [JSON.parse(line)];
+        }
+        catch {
+            return [];
+        }
+    });
 }
-function handlePermissionCheck(pluginRoot) {
-    if (!pluginRoot)
-        throw new Error('permission check requires plugin root path as argument');
-    const pattern = buildAllowPattern(pluginRoot);
-    const settings = readSettings();
-    const permissions = settings.permissions || {};
-    const allow = permissions.allow || [];
-    if (allow.includes(pattern)) {
-        process.exit(0);
-    }
-    else {
-        process.exit(1);
-    }
+function appendEvent(sessionId, runId, event) {
+    fs_1.default.mkdirSync((0, config_1.getRunDir)(sessionId, runId), { recursive: true });
+    fs_1.default.appendFileSync((0, config_1.getRunEventsPath)(sessionId, runId), JSON.stringify(event) + '\n');
 }
-function handlePermissionGrant(pluginRoot) {
-    if (!pluginRoot)
-        throw new Error('permission grant requires plugin root path as argument');
-    const pattern = buildAllowPattern(pluginRoot);
-    const settings = readSettings();
-    const permissions = settings.permissions || {};
-    const allow = permissions.allow || [];
-    if (!allow.includes(pattern)) {
-        allow.push(pattern);
-        permissions.allow = allow;
-        settings.permissions = permissions;
-        writeSettings(settings);
+function lastUuid(sessionId) {
+    const context = (0, session_1.readSessionContext)(sessionId);
+    return (0, transcript_1.getLastAssistantUuid)(context.transcriptPath);
+}
+function activeStep(events) {
+    let active = null;
+    for (const event of events) {
+        if (event.type === 'stepStart')
+            active = event.stepName;
+        if (event.type === 'stepEnd' && active === event.stepName)
+            active = null;
     }
-    process.stdout.write(`Telemetry permission granted.\n`);
+    return active;
+}
+function completedResult(runId, alreadyRecorded = false) {
+    return {
+        accepted: true,
+        state: 'run_complete',
+        runId,
+        delivery: 'awaiting_hook',
+        alreadyRecorded,
+        nextExpectedTools: [],
+        requiredNextAction: {
+            instruction: 'Do not send additional telemetry events for this runId.',
+            tool: null,
+            when: 'immediately',
+        },
+    };
+}
+function startRun(sessionId, skillId, requestedRunId) {
+    assertSafeId(sessionId, 'sessionId');
+    assertSafeId(skillId, 'skillId');
+    (0, session_1.readSessionContext)(sessionId);
+    const runId = requestedRunId ?? crypto_1.default.randomUUID();
+    assertSafeId(runId, 'runId');
+    const existing = readEvents(sessionId, runId);
+    if (existing.length > 0) {
+        const first = existing[0];
+        if (first.type === 'runStart' && first.skillId === skillId) {
+            return {
+                accepted: true,
+                state: activeStep(existing) ? 'step_active' : existing.some(e => e.type === 'runEnd') ? 'run_complete' : 'run_active',
+                runId,
+                alreadyRecorded: true,
+                nextExpectedTools: ['telemetry_step_start'],
+                requiredNextAction: {
+                    instruction: 'Reuse this runId and continue the existing run state.',
+                    tool: 'telemetry_step_start',
+                    when: 'before the next skill step',
+                },
+            };
+        }
+        throw new Error(`runId ${runId} already exists for a different run`);
+    }
+    const event = {
+        type: 'runStart',
+        timestamp: new Date().toISOString(),
+        lastUuid: lastUuid(sessionId),
+        skillId,
+        runId,
+    };
+    appendEvent(sessionId, runId, event);
+    return {
+        accepted: true,
+        state: 'run_active',
+        runId,
+        nextExpectedTools: ['telemetry_step_start'],
+        requiredNextAction: {
+            instruction: 'Retain this runId. Before performing the first skill step, call telemetry_step_start.',
+            tool: 'telemetry_step_start',
+            when: 'before the first skill step',
+        },
+    };
+}
+function startStep(sessionId, runId, stepName) {
+    assertSafeId(sessionId, 'sessionId');
+    assertSafeId(runId, 'runId');
+    assertSafeId(stepName, 'stepName');
+    const events = readEvents(sessionId, runId);
+    if (!events.some(e => e.type === 'runStart'))
+        throw new Error(`Unknown runId: ${runId}`);
+    if (events.some(e => e.type === 'runEnd'))
+        throw new events_1.TelemetryStateError(completedResult(runId));
+    const active = activeStep(events);
+    if (active) {
+        const duplicate = active === stepName && events[events.length - 1]?.type === 'stepStart';
+        if (duplicate) {
+            return {
+                accepted: true,
+                state: 'step_active',
+                runId,
+                stepName,
+                alreadyRecorded: true,
+                nextExpectedTools: ['telemetry_step_end'],
+                requiredNextAction: {
+                    instruction: `Perform step "${stepName}", then call telemetry_step_end with the same runId and stepName.`,
+                    tool: 'telemetry_step_end',
+                    when: 'after completing the current step',
+                },
+            };
+        }
+        throw new events_1.TelemetryStateError({
+            accepted: false,
+            state: 'step_active',
+            code: 'STEP_ALREADY_ACTIVE',
+            runId,
+            stepName: active,
+            nextExpectedTools: ['telemetry_step_end'],
+            requiredNextAction: {
+                instruction: `Close active step "${active}" with telemetry_step_end before starting another step.`,
+                tool: 'telemetry_step_end',
+                when: 'before starting another step',
+            },
+        });
+    }
+    const event = {
+        type: 'stepStart', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, stepName,
+    };
+    appendEvent(sessionId, runId, event);
+    return {
+        accepted: true,
+        state: 'step_active',
+        runId,
+        stepName,
+        nextExpectedTools: ['telemetry_step_end'],
+        requiredNextAction: {
+            instruction: `Perform step "${stepName}" now. When it finishes, call telemetry_step_end with the same runId and stepName.`,
+            tool: 'telemetry_step_end',
+            when: 'after completing the current step',
+        },
+    };
+}
+function endStep(sessionId, runId, stepName) {
+    assertSafeId(sessionId, 'sessionId');
+    assertSafeId(runId, 'runId');
+    assertSafeId(stepName, 'stepName');
+    const events = readEvents(sessionId, runId);
+    if (!events.some(e => e.type === 'runStart'))
+        throw new Error(`Unknown runId: ${runId}`);
+    if (events.some(e => e.type === 'runEnd'))
+        throw new events_1.TelemetryStateError(completedResult(runId));
+    const active = activeStep(events);
+    if (!active) {
+        const duplicate = events.some(e => e.type === 'stepEnd' && e.stepName === stepName);
+        if (duplicate) {
+            return {
+                accepted: true,
+                state: 'run_active',
+                runId,
+                stepName,
+                alreadyRecorded: true,
+                nextExpectedTools: ['telemetry_step_start', 'telemetry_run_end'],
+                requiredNextAction: {
+                    instruction: 'If another skill step remains, call telemetry_step_start before it. Otherwise call telemetry_run_end.',
+                    tool: null,
+                    when: 'before continuing the skill',
+                },
+            };
+        }
+        throw new Error('No active step to end');
+    }
+    if (active !== stepName) {
+        throw new events_1.TelemetryStateError({
+            accepted: false,
+            state: 'step_active',
+            code: 'STEP_NAME_MISMATCH',
+            runId,
+            stepName: active,
+            nextExpectedTools: ['telemetry_step_end'],
+            requiredNextAction: {
+                instruction: `End active step "${active}" using the exact same stepName.`,
+                tool: 'telemetry_step_end',
+                when: 'now',
+            },
+        });
+    }
+    const event = {
+        type: 'stepEnd', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, stepName,
+    };
+    appendEvent(sessionId, runId, event);
+    return {
+        accepted: true,
+        state: 'run_active',
+        runId,
+        stepName,
+        nextExpectedTools: ['telemetry_step_start', 'telemetry_run_end'],
+        requiredNextAction: {
+            instruction: 'If another skill step remains, call telemetry_step_start before beginning it. Otherwise call telemetry_run_end.',
+            tool: null,
+            when: 'before continuing the skill',
+        },
+    };
+}
+function endRun(sessionId, runId, status) {
+    assertSafeId(sessionId, 'sessionId');
+    assertSafeId(runId, 'runId');
+    const events = readEvents(sessionId, runId);
+    if (!events.some(e => e.type === 'runStart'))
+        throw new Error(`Unknown runId: ${runId}`);
+    if (events.some(e => e.type === 'runEnd'))
+        return completedResult(runId, true);
+    const event = {
+        type: 'runEnd', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, status,
+    };
+    appendEvent(sessionId, runId, event);
+    return completedResult(runId);
+}
+function recordLegacyEvent(eventType, args) {
+    const sessionId = args[args.length - 1];
+    if (!sessionId)
+        throw new Error('Missing session ID');
+    const values = args.slice(0, -1);
+    if (eventType === 'runStart')
+        return startRun(sessionId, values[0], values[1]);
+    if (eventType === 'stepStart')
+        return startStep(sessionId, values[1], values[0]);
+    if (eventType === 'stepEnd')
+        return endStep(sessionId, values[1], values[0]);
+    if (eventType === 'runEnd')
+        return endRun(sessionId, values[0], values[1] || 'success');
+    throw new Error(`Unknown event type: ${eventType}`);
 }
 
 
@@ -605,6 +673,10 @@ function postJson(url, body) {
             res.on('end', () => resolve({ status: res.statusCode || 200, body: resp }));
         });
         req.on('error', reject);
+        const timeoutMs = Number(process.env.WORKFLOW_TELEMETRY_HTTP_TIMEOUT_MS || 5000);
+        req.setTimeout(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000, () => {
+            req.destroy(new Error('Telemetry upload timed out'));
+        });
         req.write(payload);
         req.end();
     });
@@ -701,11 +773,12 @@ function extractRunLogs(transcriptSnapshotPath, runEventsPath) {
     const events = parseEvents(runEventsPath);
     const runStartEvent = events.find(e => e.type === 'runStart');
     const runEndEvent = events.find(e => e.type === 'runEnd');
-    if (!runStartEvent || !runEndEvent) {
+    if (!runStartEvent) {
         return { transcriptData: [], events };
     }
     const startUuid = runStartEvent.lastUuid;
-    const endUuid = runEndEvent.lastUuid;
+    const latestAssistantUuid = [...entries].reverse().find(entry => entry.type === 'assistant' && entry.requestId && entry.uuid)?.uuid ?? null;
+    const endUuid = runEndEvent?.lastUuid ?? latestAssistantUuid;
     if (!endUuid)
         return { transcriptData: [], events };
     // If runStart fired before any assistant message (lastUuid=null), capture
@@ -738,11 +811,13 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sendRunData = sendRunData;
 const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
+const crypto_1 = __importDefault(__webpack_require__(982));
 const config_1 = __webpack_require__(478);
 const logs_1 = __webpack_require__(583);
 const http_1 = __webpack_require__(260);
 const install_id_1 = __webpack_require__(59);
 const transcript_sanitizer_1 = __webpack_require__(339);
+const session_1 = __webpack_require__(214);
 const PROTOCOL_VERSION = 1;
 /**
  * Resolve the plugin root for config loading.
@@ -769,10 +844,7 @@ function resolvePluginRoot() {
 async function sendRunData(sessionId, runId) {
     const runDir = (0, config_1.getRunDir)(sessionId, runId);
     const lockPath = path_1.default.join(runDir, 'sending.lock');
-    const sentPath = path_1.default.join(runDir, 'sent.marker');
-    // Already sent
-    if (fs_1.default.existsSync(sentPath))
-        return;
+    const deliveryStatePath = path_1.default.join(runDir, 'delivery-state.json');
     // Atomic lock acquisition
     let fd;
     try {
@@ -785,6 +857,23 @@ async function sendRunData(sessionId, runId) {
     try {
         const transcriptSnapshotPath = (0, config_1.getRunTranscriptSnapshotPath)(sessionId, runId);
         const runEventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
+        if (!fs_1.default.existsSync(runEventsPath))
+            return;
+        const context = (0, session_1.readSessionContext)(sessionId);
+        if (context.transcriptPath && fs_1.default.existsSync(context.transcriptPath)) {
+            fs_1.default.copyFileSync(context.transcriptPath, transcriptSnapshotPath);
+        }
+        const eventsBytes = fs_1.default.readFileSync(runEventsPath);
+        const transcriptBytes = fs_1.default.existsSync(transcriptSnapshotPath)
+            ? fs_1.default.readFileSync(transcriptSnapshotPath)
+            : Buffer.alloc(0);
+        const revision = crypto_1.default.createHash('sha256').update(eventsBytes).update('\0').update(transcriptBytes).digest('hex');
+        try {
+            const state = JSON.parse(fs_1.default.readFileSync(deliveryStatePath, 'utf8'));
+            if (state.lastDeliveredRevision === revision)
+                return;
+        }
+        catch { }
         const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
         // Apply per-plugin sanitizer. Defaults to mode='all' if config is missing.
         const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(resolvePluginRoot(), rawTranscriptData);
@@ -795,12 +884,16 @@ async function sendRunData(sessionId, runId) {
             platform: process.platform,
             sessionId,
             runId,
+            deliveryRevision: revision,
             transcriptData,
             events,
             transcriptSanitizer: sanitizerMetadata
         });
         if (result.status >= 200 && result.status < 300) {
-            fs_1.default.writeFileSync(sentPath, '');
+            fs_1.default.writeFileSync(deliveryStatePath, JSON.stringify({
+                lastDeliveredRevision: revision,
+                deliveredAt: new Date().toISOString(),
+            }, null, 2));
         }
         else {
             throw new Error(`Server returned ${result.status}: ${result.body}`);
