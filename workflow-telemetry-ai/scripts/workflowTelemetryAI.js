@@ -47,14 +47,22 @@ exports.handleCaptureConsentResponse = handleCaptureConsentResponse;
 const consent_1 = __webpack_require__(943);
 const consent_disclosure_1 = __webpack_require__(837);
 const stdin_1 = __webpack_require__(308);
+const session_1 = __webpack_require__(214);
 function captureDisclosureResponse(payload, pluginRoot) {
     if (payload.hook_event_name !== 'PostToolUse' || payload.tool_name !== 'AskUserQuestion')
         return false;
     const decision = (0, consent_disclosure_1.disclosureDecision)(payload.tool_input, payload.tool_response, pluginRoot);
     if (!decision)
         return false;
+    let projectDir = typeof payload.cwd === 'string' ? payload.cwd : undefined;
+    if (typeof payload.session_id === 'string') {
+        try {
+            projectDir = (0, session_1.readSessionContext)(payload.session_id).projectDir || projectDir;
+        }
+        catch { }
+    }
     (0, consent_1.captureConsent)(decision, {
-        projectDir: typeof payload.cwd === 'string' ? payload.cwd : undefined,
+        projectDir,
         pluginRoot,
     });
     return true;
@@ -86,6 +94,7 @@ exports.permissionDecision = permissionDecision;
 exports.handleCheckMcpPermission = handleCheckMcpPermission;
 const consent_1 = __webpack_require__(943);
 const stdin_1 = __webpack_require__(308);
+const session_1 = __webpack_require__(214);
 const TOOL_PREFIX = 'mcp__plugin_workflow-telemetry-ai_workflow-telemetry__';
 exports.TOOL_PREFIX = TOOL_PREFIX;
 const SUPPORTED_TOOLS = new Set([
@@ -95,6 +104,16 @@ const SUPPORTED_TOOLS = new Set([
     'telemetry_step_end',
     'telemetry_run_end',
 ]);
+function consentContext(payload, pluginRoot) {
+    let projectDir = typeof payload.cwd === 'string' ? payload.cwd : undefined;
+    if (typeof payload.session_id === 'string') {
+        try {
+            projectDir = (0, session_1.readSessionContext)(payload.session_id).projectDir || projectDir;
+        }
+        catch { }
+    }
+    return { projectDir, pluginRoot };
+}
 function permissionDecision(payload, pluginRoot) {
     if (payload.hook_event_name !== 'PreToolUse' || typeof payload.tool_name !== 'string')
         return null;
@@ -105,10 +124,7 @@ function permissionDecision(payload, pluginRoot) {
         return null;
     if (!payload.tool_input || typeof payload.tool_input !== 'object')
         return null;
-    const context = {
-        projectDir: typeof payload.cwd === 'string' ? payload.cwd : undefined,
-        pluginRoot,
-    };
+    const context = consentContext(payload, pluginRoot);
     let allowed = tool === 'telemetry_run_start';
     if (tool === 'telemetry_set_consent') {
         const requested = payload.tool_input.decision;
@@ -359,7 +375,8 @@ async function handleSessionStart() {
     const context = {
         sessionId,
         transcriptPath: transcriptPath || null,
-        startTime: new Date().toISOString()
+        startTime: new Date().toISOString(),
+        projectDir: payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
     };
     fs_1.default.writeFileSync((0, config_1.getContextPath)(sessionId), JSON.stringify(context, null, 2));
     // fs.mkdirSync(getBaseDir(), { recursive: true });
@@ -548,6 +565,9 @@ function getCapturedConsent(context = {}) {
     return record?.status === 'captured' ? record.decision : null;
 }
 function captureConsent(decision, context = {}) {
+    const existing = readStore()[consentKey(context)];
+    if (existing?.status !== 'captured' && existing?.decision === decision)
+        return;
     writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'captured' }, context);
 }
 function confirmConsent(decision, context = {}) {
