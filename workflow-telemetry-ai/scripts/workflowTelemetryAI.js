@@ -130,7 +130,6 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.handleScanAndSend = handleScanAndSend;
 const child_process_1 = __webpack_require__(317);
 const fs_1 = __importDefault(__webpack_require__(896));
-const path_1 = __importDefault(__webpack_require__(928));
 const stdin_1 = __webpack_require__(308);
 const config_1 = __webpack_require__(478);
 async function handleScanAndSend() {
@@ -145,11 +144,7 @@ async function handleScanAndSend() {
             return;
         const runDirs = fs_1.default.readdirSync(sessionDir);
         for (const runId of runDirs) {
-            const runDir = path_1.default.join(sessionDir, runId);
-            const lockPath = path_1.default.join(runDir, 'sending.lock');
             const eventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
-            if (fs_1.default.existsSync(lockPath))
-                continue; // In progress
             if (!fs_1.default.existsSync(eventsPath))
                 continue; // No events yet
             (0, child_process_1.spawn)(process.execPath, [process.argv[1], 'send-run', sessionId, runId], {
@@ -406,9 +401,27 @@ function startRun(sessionId, skillId, requestedRunId) {
     if (existing.length > 0) {
         const first = existing[0];
         if (first.type === 'runStart' && first.skillId === skillId) {
+            const active = activeStep(existing);
+            if (existing.some(e => e.type === 'runEnd'))
+                return completedResult(runId, true);
+            if (active) {
+                return {
+                    accepted: true,
+                    state: 'step_active',
+                    runId,
+                    stepName: active,
+                    alreadyRecorded: true,
+                    nextExpectedTools: ['telemetry_step_end'],
+                    requiredNextAction: {
+                        instruction: `Reuse this runId. Complete active step "${active}", then call telemetry_step_end with the same runId and stepName.`,
+                        tool: 'telemetry_step_end',
+                        when: 'after completing the current step',
+                    },
+                };
+            }
             return {
                 accepted: true,
-                state: activeStep(existing) ? 'step_active' : existing.some(e => e.type === 'runEnd') ? 'run_complete' : 'run_active',
+                state: 'run_active',
                 runId,
                 alreadyRecorded: true,
                 nextExpectedTools: ['telemetry_step_start'],
@@ -579,14 +592,20 @@ function recordLegacyEvent(eventType, args) {
     if (!sessionId)
         throw new Error('Missing session ID');
     const values = args.slice(0, -1);
+    const required = (index, label) => {
+        const value = values[index];
+        if (!value)
+            throw new Error(`Missing ${label}`);
+        return value;
+    };
     if (eventType === 'runStart')
-        return startRun(sessionId, values[0], values[1]);
+        return startRun(sessionId, required(0, 'skill ID'), values[1]);
     if (eventType === 'stepStart')
-        return startStep(sessionId, values[1], values[0]);
+        return startStep(sessionId, required(1, 'run ID'), required(0, 'step name'));
     if (eventType === 'stepEnd')
-        return endStep(sessionId, values[1], values[0]);
+        return endStep(sessionId, required(1, 'run ID'), required(0, 'step name'));
     if (eventType === 'runEnd')
-        return endRun(sessionId, values[0], values[1] || 'success');
+        return endRun(sessionId, required(0, 'run ID'), values[1] || 'success');
     throw new Error(`Unknown event type: ${eventType}`);
 }
 
@@ -808,6 +827,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.deliveryRevision = deliveryRevision;
 exports.sendRunData = sendRunData;
 const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
@@ -819,6 +839,22 @@ const install_id_1 = __webpack_require__(59);
 const transcript_sanitizer_1 = __webpack_require__(339);
 const session_1 = __webpack_require__(214);
 const PROTOCOL_VERSION = 1;
+const LOCK_TTL_MS = 5 * 60 * 1000;
+function removeStaleLock(lockPath) {
+    try {
+        const ageMs = Date.now() - fs_1.default.statSync(lockPath).mtimeMs;
+        if (ageMs > LOCK_TTL_MS)
+            fs_1.default.unlinkSync(lockPath);
+    }
+    catch { }
+}
+function deliveryRevision(transcriptData, events, sanitizerMetadata) {
+    return crypto_1.default.createHash('sha256').update(JSON.stringify({
+        transcriptData,
+        events,
+        transcriptSanitizer: sanitizerMetadata,
+    })).digest('hex');
+}
 /**
  * Resolve the plugin root for config loading.
  *
@@ -847,6 +883,7 @@ async function sendRunData(sessionId, runId) {
     const deliveryStatePath = path_1.default.join(runDir, 'delivery-state.json');
     // Atomic lock acquisition
     let fd;
+    removeStaleLock(lockPath);
     try {
         fd = fs_1.default.openSync(lockPath, 'wx');
         fs_1.default.closeSync(fd);
@@ -863,20 +900,16 @@ async function sendRunData(sessionId, runId) {
         if (context.transcriptPath && fs_1.default.existsSync(context.transcriptPath)) {
             fs_1.default.copyFileSync(context.transcriptPath, transcriptSnapshotPath);
         }
-        const eventsBytes = fs_1.default.readFileSync(runEventsPath);
-        const transcriptBytes = fs_1.default.existsSync(transcriptSnapshotPath)
-            ? fs_1.default.readFileSync(transcriptSnapshotPath)
-            : Buffer.alloc(0);
-        const revision = crypto_1.default.createHash('sha256').update(eventsBytes).update('\0').update(transcriptBytes).digest('hex');
+        const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
+        // Apply per-plugin sanitizer. Defaults to mode='all' if config is missing.
+        const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(resolvePluginRoot(), rawTranscriptData);
+        const revision = deliveryRevision(transcriptData, events, sanitizerMetadata);
         try {
             const state = JSON.parse(fs_1.default.readFileSync(deliveryStatePath, 'utf8'));
             if (state.lastDeliveredRevision === revision)
                 return;
         }
         catch { }
-        const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
-        // Apply per-plugin sanitizer. Defaults to mode='all' if config is missing.
-        const { entries: transcriptData, metadata: sanitizerMetadata } = (0, transcript_sanitizer_1.applyTranscriptSanitizer)(resolvePluginRoot(), rawTranscriptData);
         const serverUrl = process.env.WORKFLOW_TELEMETRY_SERVER || 'http://localhost:3000/ingest';
         const result = await (0, http_1.postJson)(serverUrl, {
             protocolVersion: PROTOCOL_VERSION,
