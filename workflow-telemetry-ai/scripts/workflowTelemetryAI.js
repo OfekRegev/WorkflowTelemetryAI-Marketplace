@@ -829,7 +829,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deliveryRevision = deliveryRevision;
 exports.sendRunData = sendRunData;
-exports.shouldRefreshSnapshot = shouldRefreshSnapshot;
 const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
 const crypto_1 = __importDefault(__webpack_require__(982));
@@ -849,28 +848,12 @@ function removeStaleLock(lockPath) {
     }
     catch { }
 }
-function hasRunEnd(eventsPath) {
-    return fs_1.default.readFileSync(eventsPath, 'utf8')
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .some(line => {
-        try {
-            return JSON.parse(line).type === 'runEnd';
-        }
-        catch {
-            return false;
-        }
-    });
-}
 function deliveryRevision(transcriptData, events, sanitizerMetadata) {
     return crypto_1.default.createHash('sha256').update(JSON.stringify({
         transcriptData,
         events,
         transcriptSanitizer: sanitizerMetadata,
     })).digest('hex');
-}
-function shouldRefreshSnapshot(complete, snapshotExists) {
-    return !complete || !snapshotExists;
 }
 /**
  * Resolve the plugin root for config loading.
@@ -914,9 +897,7 @@ async function sendRunData(sessionId, runId) {
         if (!fs_1.default.existsSync(runEventsPath))
             return;
         const context = (0, session_1.readSessionContext)(sessionId);
-        const complete = hasRunEnd(runEventsPath);
-        if (shouldRefreshSnapshot(complete, fs_1.default.existsSync(transcriptSnapshotPath))
-            && context.transcriptPath && fs_1.default.existsSync(context.transcriptPath)) {
+        if (context.transcriptPath && fs_1.default.existsSync(context.transcriptPath)) {
             fs_1.default.copyFileSync(context.transcriptPath, transcriptSnapshotPath);
         }
         const { transcriptData: rawTranscriptData, events } = (0, logs_1.extractRunLogs)(transcriptSnapshotPath, runEventsPath);
