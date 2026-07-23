@@ -1,84 +1,45 @@
-# WorkflowTelemetryAI - Telemetry Event Recording Protocol
+# WorkflowTelemetryAI - MCP Telemetry Protocol
 
-When executing any skill in this plugin, record execution telemetry at step boundaries using the WorkflowTelemetryAI system.
+When executing a skill in this plugin, use the WorkflowTelemetryAI MCP tools to record semantic run and step boundaries. MCP is the only production telemetry instrumentation path. Never invoke the telemetry CLI through Bash.
 
-## Permission check (do this before anything else)
+The current Claude session ID is `$SESSION_ID`.
 
-Before recording any telemetry, check whether the user has already granted permission:
+## Required behavior
 
-```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission check $PLUGIN_ROOT
-```
+1. Before doing any skill work, call `telemetry_run_start` with `sessionId: "$SESSION_ID"` and the invoked skill name as `skillId`.
+2. Read the textual `Required next action` in every telemetry result and follow it.
+3. Preserve the returned `runId` exactly for the entire run.
+4. Immediately before every documented skill step, call `telemetry_step_start`.
+5. Immediately after completing that step, call `telemetry_step_end` with the identical `runId` and `stepName`.
+6. On semantic workflow completion, call `telemetry_run_end` with `success` or `failure`.
+7. Telemetry errors must never block or replace the user's requested work.
 
-- If it exits with code **0** → permission already granted, skip to **Quick Reference** below.
-- If it exits with code **1** → permission not yet granted, follow the steps below.
+## Consent flow
 
-### Requesting permission
+`telemetry_run_start` may return `CONSENT_REQUIRED`. If it does, use `AskUserQuestion` with exactly this disclosure:
 
-Use the `AskUserQuestion` tool with exactly this structure:
-
-```
-question: "$PLUGIN_NAME would like to collect data about the plugin's resource usage in this session. We collect step timings, token counts, tool names, and an anonymous install identifier. Tool inputs are filtered before sending: by default this plugin's configuration keeps redacted shell commands (command name only), file basenames (never full paths), and the questions this skill asks you — never file contents, full file paths, or your own messages. The filtering rules are configurable per plugin (see telemetry.config.json); anything not explicitly allowed by that configuration is redacted, not sent as-is. This data may be sent to the plugin author. Privacy Policy: https://google.com"
+```text
+question: "$PLUGIN_NAME would like to collect data about this plugin's resource usage. We collect step timings, token counts, tool names, an anonymous install identifier, and a sanitized transcript slice. Tool inputs are filtered according to telemetry.config.json; unapproved content is redacted. Data may be sent to the plugin author. Privacy Policy: https://google.com"
 header: "Data collection"
 options:
   - label: "Allow"
   - label: "Decline"
 ```
 
-- If the user selects **"Decline"** → skip all telemetry for this run. Do not call any `runStart`, `stepStart`, `stepEnd`, or `runEnd` commands.
-- If the user selects **"Allow"** → grant permission and continue:
+- After explicit **Allow**, call `telemetry_set_consent` with `decision: "allow"`, then call `telemetry_run_start` again.
+- After **Decline**, call `telemetry_set_consent` with `decision: "decline"`, skip all telemetry for this workflow, and continue the user's work.
+- Consent is remembered for this project and plugin identity.
 
-```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js permission grant $PLUGIN_ROOT
-```
+## Step names
 
-This writes an allow pattern to `.claude/settings.local.json` so future telemetry commands run without prompting. The user will not be asked again for this project.
+Read the skill's `SKILL.md`. Each numbered or headed execution step becomes one telemetry step. Derive `stepName` as a stable kebab-case slug of the step title and reuse the exact value for its start and end calls.
 
----
+Steps that ask the user a question or wait for input still have start and end boundaries.
 
-## Quick Reference
+## Tool result contract
 
-**Important:** Each telemetry command (runStart, stepStart, stepEnd, runEnd) must be its own standalone Bash tool invocation. Never combine telemetry calls with work commands using `&&` or `;`. This ensures each command gets its own message UUID, enabling unambiguous step-to-message correlation.
+Every result contains model-visible text with a `Required next action` and structured state with identifiers and expected tools. Follow corrective results before advancing.
 
-### At skill start
-```bash
-RUN_ID="$(node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js gen-run-id)"
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runStart <skill-name> "$RUN_ID" "$SESSION_ID"
-```
+## Session interruption
 
-### For each step
-```bash
-# Tool call 1: Record step start
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepStart <stepName> "$RUN_ID" "$SESSION_ID"
-```
-```bash
-# Tool call 2: Do the work
-# ... your work commands here ...
-```
-```bash
-# Tool call 3: Record step end
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event stepEnd <stepName> "$RUN_ID" "$SESSION_ID"
-```
-
-### At skill end
-```bash
-node $PLUGIN_ROOT/scripts/workflowTelemetryAI.js event runEnd "$RUN_ID" success "$SESSION_ID"
-```
-
-## Step naming and coverage
-
-Read the skill's `SKILL.md` to identify the steps. Each numbered or headed step (e.g. "Step 1: Initialize workspace") becomes one telemetry step.
-
-- Derive the `stepName` as a kebab-case slug of the step title (e.g. `initialize-workspace`, `get-user-preferences`).
-- Use the **same** `stepName` for the matching `stepStart` and `stepEnd`.
-- Wrap **every** step in `stepStart`/`stepEnd`, including steps that only ask the user a question or wait for input. This ensures complete coverage with no untracked work between steps.
-
-## Details
-
-**Key points:**
-- Generate a unique `RUN_ID` at the start of each skill execution
-- Record `stepStart` before beginning each step
-- Record `stepEnd` after completing each step
-- Record `runEnd success` when the skill completes successfully
-- Record `runEnd failure` if the skill fails
-- Telemetry is processed automatically after `runEnd` is called
+Do not invent `run_end failure` because Claude is stopping or the session is interrupted. Lifecycle hooks upload the current incomplete revision. A resumed session may continue the same run and complete it later.

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "workflow-telemetry": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryMcp.js"],
+      "alwaysLoad": true
+    }
+  }
+}
