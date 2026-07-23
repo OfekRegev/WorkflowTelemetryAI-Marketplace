@@ -6296,9 +6296,27 @@ function startRun(sessionId, skillId, requestedRunId) {
     if (existing.length > 0) {
         const first = existing[0];
         if (first.type === 'runStart' && first.skillId === skillId) {
+            const active = activeStep(existing);
+            if (existing.some(e => e.type === 'runEnd'))
+                return completedResult(runId, true);
+            if (active) {
+                return {
+                    accepted: true,
+                    state: 'step_active',
+                    runId,
+                    stepName: active,
+                    alreadyRecorded: true,
+                    nextExpectedTools: ['telemetry_step_end'],
+                    requiredNextAction: {
+                        instruction: `Reuse this runId. Complete active step "${active}", then call telemetry_step_end with the same runId and stepName.`,
+                        tool: 'telemetry_step_end',
+                        when: 'after completing the current step',
+                    },
+                };
+            }
             return {
                 accepted: true,
-                state: activeStep(existing) ? 'step_active' : existing.some(e => e.type === 'runEnd') ? 'run_complete' : 'run_active',
+                state: 'run_active',
                 runId,
                 alreadyRecorded: true,
                 nextExpectedTools: ['telemetry_step_start'],
@@ -6469,14 +6487,20 @@ function recordLegacyEvent(eventType, args) {
     if (!sessionId)
         throw new Error('Missing session ID');
     const values = args.slice(0, -1);
+    const required = (index, label) => {
+        const value = values[index];
+        if (!value)
+            throw new Error(`Missing ${label}`);
+        return value;
+    };
     if (eventType === 'runStart')
-        return startRun(sessionId, values[0], values[1]);
+        return startRun(sessionId, required(0, 'skill ID'), values[1]);
     if (eventType === 'stepStart')
-        return startStep(sessionId, values[1], values[0]);
+        return startStep(sessionId, required(1, 'run ID'), required(0, 'step name'));
     if (eventType === 'stepEnd')
-        return endStep(sessionId, values[1], values[0]);
+        return endStep(sessionId, required(1, 'run ID'), required(0, 'step name'));
     if (eventType === 'runEnd')
-        return endRun(sessionId, values[0], values[1] || 'success');
+        return endRun(sessionId, required(0, 'run ID'), values[1] || 'success');
     throw new Error(`Unknown event type: ${eventType}`);
 }
 
@@ -34590,10 +34614,11 @@ const zod_1 = __webpack_require__(7552);
 const events_1 = __webpack_require__(9508);
 const consent_1 = __webpack_require__(3943);
 const record_event_1 = __webpack_require__(9741);
+const session_1 = __webpack_require__(1214);
 const id = zod_1.z.string().min(1).max(200);
 const resultSchema = zod_1.z.object({
     accepted: zod_1.z.boolean(),
-    state: zod_1.z.enum(['consent_required', 'consent_recorded', 'run_active', 'step_active', 'run_complete']),
+    state: zod_1.z.enum(['consent_required', 'consent_recorded', 'run_active', 'step_active', 'run_complete', 'error']),
     runId: zod_1.z.string(),
     stepName: zod_1.z.string().optional(),
     delivery: zod_1.z.literal('awaiting_hook').optional(),
@@ -34623,7 +34648,7 @@ function failure(error, runId = '') {
     process.stderr.write(`[workflowTelemetryAI:mcp] ${message}\n`);
     const result = {
         accepted: false,
-        state: 'run_active',
+        state: 'error',
         code: 'TELEMETRY_ERROR',
         runId,
         nextExpectedTools: [],
@@ -34666,7 +34691,13 @@ server.registerTool('telemetry_set_consent', {
     }),
     outputSchema: resultSchema,
     _meta: alwaysLoad,
-}, async ({ decision }) => {
+}, async ({ sessionId, decision }) => {
+    try {
+        (0, session_1.readSessionContext)(sessionId);
+    }
+    catch (error) {
+        return failure(error);
+    }
     (0, consent_1.setConsent)(decision);
     const allowed = decision === 'allow';
     return toolResult({
