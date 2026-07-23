@@ -36,6 +36,113 @@ function handleEvent(eventType, args) {
 
 /***/ },
 
+/***/ 472
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.captureDisclosureResponse = captureDisclosureResponse;
+exports.handleCaptureConsentResponse = handleCaptureConsentResponse;
+const consent_1 = __webpack_require__(943);
+const consent_disclosure_1 = __webpack_require__(837);
+const stdin_1 = __webpack_require__(308);
+function captureDisclosureResponse(payload, pluginRoot) {
+    if (payload.hook_event_name !== 'PostToolUse' || payload.tool_name !== 'AskUserQuestion')
+        return false;
+    const decision = (0, consent_disclosure_1.disclosureDecision)(payload.tool_input, payload.tool_response, pluginRoot);
+    if (!decision)
+        return false;
+    (0, consent_1.captureConsent)(decision, {
+        projectDir: typeof payload.cwd === 'string' ? payload.cwd : undefined,
+        pluginRoot,
+    });
+    return true;
+}
+async function handleCaptureConsentResponse() {
+    try {
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+        if (!pluginRoot)
+            return;
+        const payload = JSON.parse(await (0, stdin_1.readStdin)());
+        captureDisclosureResponse(payload, pluginRoot);
+    }
+    catch (error) {
+        process.stderr.write(`[workflowTelemetryAI:consent] ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+}
+
+
+/***/ },
+
+/***/ 92
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TOOL_PREFIX = void 0;
+exports.permissionDecision = permissionDecision;
+exports.handleCheckMcpPermission = handleCheckMcpPermission;
+const consent_1 = __webpack_require__(943);
+const stdin_1 = __webpack_require__(308);
+const TOOL_PREFIX = 'mcp__plugin_workflow-telemetry-ai_workflow-telemetry__';
+exports.TOOL_PREFIX = TOOL_PREFIX;
+const SUPPORTED_TOOLS = new Set([
+    'telemetry_run_start',
+    'telemetry_set_consent',
+    'telemetry_step_start',
+    'telemetry_step_end',
+    'telemetry_run_end',
+]);
+function permissionDecision(payload, pluginRoot) {
+    if (payload.hook_event_name !== 'PreToolUse' || typeof payload.tool_name !== 'string')
+        return null;
+    if (!payload.tool_name.startsWith(TOOL_PREFIX))
+        return null;
+    const tool = payload.tool_name.slice(TOOL_PREFIX.length);
+    if (!SUPPORTED_TOOLS.has(tool))
+        return null;
+    if (!payload.tool_input || typeof payload.tool_input !== 'object')
+        return null;
+    const context = {
+        projectDir: typeof payload.cwd === 'string' ? payload.cwd : undefined,
+        pluginRoot,
+    };
+    let allowed = tool === 'telemetry_run_start';
+    if (tool === 'telemetry_set_consent') {
+        const requested = payload.tool_input.decision;
+        allowed = (requested === 'allow' || requested === 'decline')
+            && (0, consent_1.getCapturedConsent)(context) === requested;
+    }
+    else if (tool !== 'telemetry_run_start') {
+        allowed = (0, consent_1.getConsent)(context) === 'allow';
+    }
+    if (!allowed)
+        return null;
+    return {
+        hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason: 'Approved by explicit WorkflowTelemetry analytics consent.',
+        },
+    };
+}
+async function handleCheckMcpPermission() {
+    try {
+        const payload = JSON.parse(await (0, stdin_1.readStdin)());
+        const result = permissionDecision(payload, process.env.CLAUDE_PLUGIN_ROOT);
+        if (result)
+            process.stdout.write(JSON.stringify(result));
+    }
+    catch (error) {
+        process.stderr.write(`[workflowTelemetryAI:permission] ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+}
+
+
+/***/ },
+
 /***/ 980
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -75,6 +182,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.derivePluginName = derivePluginName;
 exports.handleReadProtocol = handleReadProtocol;
 const fs = __importStar(__webpack_require__(896));
 const path = __importStar(__webpack_require__(928));
@@ -272,6 +380,8 @@ const session_end_1 = __webpack_require__(847);
 const send_run_1 = __webpack_require__(257);
 const read_protocol_1 = __webpack_require__(980);
 const scan_and_send_1 = __webpack_require__(85);
+const check_mcp_permission_1 = __webpack_require__(92);
+const capture_consent_response_1 = __webpack_require__(472);
 const record_1 = __webpack_require__(775);
 const [, , mode, subcommand, ...args] = process.argv;
 async function main() {
@@ -285,6 +395,10 @@ async function main() {
                 await (0, read_protocol_1.handleReadProtocol)(args[0]);
             else if (subcommand === 'scan-and-send')
                 await (0, scan_and_send_1.handleScanAndSend)();
+            else if (subcommand === 'check-mcp-permission')
+                await (0, check_mcp_permission_1.handleCheckMcpPermission)();
+            else if (subcommand === 'capture-consent-response')
+                await (0, capture_consent_response_1.handleCaptureConsentResponse)();
             else
                 throw new Error(`Unknown hook subcommand: ${subcommand}`);
         }
@@ -312,6 +426,132 @@ async function main() {
     }
 }
 main();
+
+
+/***/ },
+
+/***/ 837
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DISCLOSURE_SUFFIX = exports.DISCLOSURE_HEADER = void 0;
+exports.disclosureDecision = disclosureDecision;
+const read_protocol_1 = __webpack_require__(980);
+exports.DISCLOSURE_HEADER = 'Data collection';
+exports.DISCLOSURE_SUFFIX = ' would like to collect data about this plugin\'s resource usage. We collect step timings, token counts, tool names, an anonymous install identifier, and a sanitized transcript slice. Tool inputs are filtered according to telemetry.config.json; unapproved content is redacted. Data may be sent to the plugin author. Privacy Policy: https://google.com';
+function disclosureDecision(toolInput, toolResponse, pluginRoot) {
+    const questions = toolInput?.questions;
+    if (!Array.isArray(questions) || questions.length !== 1)
+        return null;
+    const question = questions[0];
+    const expectedQuestion = `${(0, read_protocol_1.derivePluginName)(pluginRoot)}${exports.DISCLOSURE_SUFFIX}`;
+    if (question.question !== expectedQuestion || question.header !== exports.DISCLOSURE_HEADER)
+        return null;
+    if (!Array.isArray(question.options))
+        return null;
+    const labels = question.options.map(option => option.label);
+    if (labels.length !== 2 || labels[0] !== 'Allow' || labels[1] !== 'Decline')
+        return null;
+    const answer = extractAnswer(toolResponse, expectedQuestion);
+    return answer === 'Allow' ? 'allow' : answer === 'Decline' ? 'decline' : null;
+}
+function extractAnswer(response, question) {
+    if (!response || typeof response !== 'object')
+        return null;
+    const record = response;
+    const answers = record.answers;
+    if (answers && typeof answers === 'object') {
+        const answerRecord = answers;
+        if (question in answerRecord)
+            return answerRecord[question];
+        const values = Object.values(answerRecord);
+        if (values.length === 1)
+            return values[0];
+    }
+    for (const key of ['answer', 'selected', 'value', 'label', 'response']) {
+        if (typeof record[key] === 'string')
+            return record[key];
+    }
+    return null;
+}
+
+
+/***/ },
+
+/***/ 943
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getConsent = getConsent;
+exports.getCapturedConsent = getCapturedConsent;
+exports.captureConsent = captureConsent;
+exports.confirmConsent = confirmConsent;
+const crypto_1 = __importDefault(__webpack_require__(982));
+const fs_1 = __importDefault(__webpack_require__(896));
+const path_1 = __importDefault(__webpack_require__(928));
+const config_1 = __webpack_require__(478);
+function pluginIdentity(root = process.env.CLAUDE_PLUGIN_ROOT) {
+    if (root) {
+        try {
+            const manifest = JSON.parse(fs_1.default.readFileSync(path_1.default.join(root, 'plugin.json'), 'utf8'));
+            if (manifest.name)
+                return manifest.name;
+        }
+        catch { }
+    }
+    return 'workflow-telemetry-ai';
+}
+function consentKey(context = {}) {
+    const resolvedProject = path_1.default.resolve(context.projectDir || process.env.CLAUDE_PROJECT_DIR || process.cwd());
+    const project = process.platform === 'win32' ? resolvedProject.toLowerCase() : resolvedProject;
+    return crypto_1.default.createHash('sha256').update(`${project}\0${pluginIdentity(context.pluginRoot)}`).digest('hex');
+}
+function consentPath() {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'consent.json');
+}
+function readStore() {
+    try {
+        return JSON.parse(fs_1.default.readFileSync(consentPath(), 'utf8'));
+    }
+    catch {
+        return {};
+    }
+}
+function writeRecord(record, context = {}) {
+    const store = readStore();
+    store[consentKey(context)] = record;
+    fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
+    const target = consentPath();
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs_1.default.writeFileSync(temporary, JSON.stringify(store, null, 2));
+    fs_1.default.renameSync(temporary, target);
+}
+function getConsent(context = {}) {
+    const record = readStore()[consentKey(context)];
+    if (!record || record.status === 'captured')
+        return null;
+    return record.decision;
+}
+function getCapturedConsent(context = {}) {
+    const record = readStore()[consentKey(context)];
+    return record?.status === 'captured' ? record.decision : null;
+}
+function captureConsent(decision, context = {}) {
+    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'captured' }, context);
+}
+function confirmConsent(decision, context = {}) {
+    if (getCapturedConsent(context) !== decision)
+        return false;
+    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
+    return true;
+}
 
 
 /***/ },

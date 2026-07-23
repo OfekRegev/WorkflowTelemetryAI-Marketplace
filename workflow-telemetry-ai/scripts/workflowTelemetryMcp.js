@@ -6163,13 +6163,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getConsent = getConsent;
-exports.setConsent = setConsent;
+exports.getCapturedConsent = getCapturedConsent;
+exports.captureConsent = captureConsent;
+exports.confirmConsent = confirmConsent;
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const fs_1 = __importDefault(__webpack_require__(9896));
 const path_1 = __importDefault(__webpack_require__(6928));
 const config_1 = __webpack_require__(2478);
-function pluginIdentity() {
-    const root = process.env.CLAUDE_PLUGIN_ROOT;
+function pluginIdentity(root = process.env.CLAUDE_PLUGIN_ROOT) {
     if (root) {
         try {
             const manifest = JSON.parse(fs_1.default.readFileSync(path_1.default.join(root, 'plugin.json'), 'utf8'));
@@ -6180,10 +6181,10 @@ function pluginIdentity() {
     }
     return 'workflow-telemetry-ai';
 }
-function consentKey() {
-    const resolvedProject = path_1.default.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+function consentKey(context = {}) {
+    const resolvedProject = path_1.default.resolve(context.projectDir || process.env.CLAUDE_PROJECT_DIR || process.cwd());
     const project = process.platform === 'win32' ? resolvedProject.toLowerCase() : resolvedProject;
-    return crypto_1.default.createHash('sha256').update(`${project}\0${pluginIdentity()}`).digest('hex');
+    return crypto_1.default.createHash('sha256').update(`${project}\0${pluginIdentity(context.pluginRoot)}`).digest('hex');
 }
 function consentPath() {
     return path_1.default.join((0, config_1.getBaseDir)(), 'consent.json');
@@ -6196,17 +6197,33 @@ function readStore() {
         return {};
     }
 }
-function getConsent() {
-    return readStore()[consentKey()]?.decision ?? null;
-}
-function setConsent(decision) {
+function writeRecord(record, context = {}) {
     const store = readStore();
-    store[consentKey()] = { decision, updatedAt: new Date().toISOString() };
+    store[consentKey(context)] = record;
     fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
     const target = consentPath();
     const temporary = `${target}.${process.pid}.tmp`;
     fs_1.default.writeFileSync(temporary, JSON.stringify(store, null, 2));
     fs_1.default.renameSync(temporary, target);
+}
+function getConsent(context = {}) {
+    const record = readStore()[consentKey(context)];
+    if (!record || record.status === 'captured')
+        return null;
+    return record.decision;
+}
+function getCapturedConsent(context = {}) {
+    const record = readStore()[consentKey(context)];
+    return record?.status === 'captured' ? record.decision : null;
+}
+function captureConsent(decision, context = {}) {
+    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'captured' }, context);
+}
+function confirmConsent(decision, context = {}) {
+    if (getCapturedConsent(context) !== decision)
+        return false;
+    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
+    return true;
 }
 
 
@@ -34698,7 +34715,9 @@ server.registerTool('telemetry_set_consent', {
     catch (error) {
         return failure(error);
     }
-    (0, consent_1.setConsent)(decision);
+    if (!(0, consent_1.confirmConsent)(decision)) {
+        return failure(new Error('Consent decision was not captured from the analytics disclosure.'));
+    }
     const allowed = decision === 'allow';
     return toolResult({
         accepted: allowed,
