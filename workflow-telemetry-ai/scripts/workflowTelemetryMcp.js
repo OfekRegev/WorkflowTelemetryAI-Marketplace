@@ -6166,20 +6166,19 @@ exports.getConsent = getConsent;
 exports.getCapturedConsent = getCapturedConsent;
 exports.captureConsent = captureConsent;
 exports.confirmConsent = confirmConsent;
+exports.withdrawConsent = withdrawConsent;
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const fs_1 = __importDefault(__webpack_require__(9896));
 const path_1 = __importDefault(__webpack_require__(6928));
 const config_1 = __webpack_require__(2478);
-function pluginIdentity(root = process.env.CLAUDE_PLUGIN_ROOT) {
-    if (root) {
-        try {
-            const manifest = JSON.parse(fs_1.default.readFileSync(path_1.default.join(root, 'plugin.json'), 'utf8'));
-            if (manifest.name)
-                return manifest.name;
-        }
-        catch { }
-    }
-    return 'workflow-telemetry-ai';
+const plugin_identity_1 = __webpack_require__(8834);
+/**
+ * Plugin identity for the consent key. Delegates to the shared resolver so
+ * consent, protocol injection, and the ingest credential lookup cannot
+ * disagree about which plugin is running.
+ */
+function pluginIdentity(root) {
+    return (0, plugin_identity_1.derivePluginName)((0, plugin_identity_1.resolvePluginRoot)(root));
 }
 function consentKey(context = {}) {
     const resolvedProject = path_1.default.resolve(context.projectDir || process.env.CLAUDE_PROJECT_DIR || process.cwd());
@@ -6228,6 +6227,205 @@ function confirmConsent(decision, context = {}) {
     writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
     return true;
 }
+/**
+ * Withdraw consent for this project (GDPR Art. 7(3)).
+ *
+ * **Never requires a captured disclosure.** Granting is gated on the exact
+ * prompt because agreement must be informed; withdrawal is the opposite — it
+ * only ever reduces collection, so gating it behind a matching prompt would
+ * make withdrawing *harder* than granting, which is precisely what Art. 7(3)
+ * forbids. It always succeeds.
+ *
+ * Project-scoped by design: the install token is device-wide and may still be
+ * serving another project that is still consenting, so this makes **no server
+ * request** and leaves registration untouched. Disconnecting the device is a
+ * separate action with a different blast radius.
+ */
+function withdrawConsent(context = {}) {
+    writeRecord({ decision: 'withdrawn', updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
+}
+
+
+/***/ },
+
+/***/ 5984
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolvePluginContext = resolvePluginContext;
+exports.initialiseOnConsent = initialiseOnConsent;
+exports.describeFailure = describeFailure;
+const telemetry_config_1 = __webpack_require__(5740);
+const plugin_identity_1 = __webpack_require__(8834);
+const registration_1 = __webpack_require__(5644);
+const crypto_1 = __webpack_require__(6982);
+function resolvePluginContext(pluginRoot = (0, plugin_identity_1.resolvePluginRoot)()) {
+    let config;
+    try {
+        config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
+    }
+    catch (error) {
+        // A broken telemetry block precedes any namespace, so there is nowhere to
+        // persist it. Surface it and stop rather than guess an endpoint.
+        if (error instanceof telemetry_config_1.TelemetryConfigError) {
+            return { ok: false, reason: 'invalid_config', detail: error.message };
+        }
+        throw error;
+    }
+    if (!config)
+        return { ok: false, reason: 'not_configured' };
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+    if (corrupt)
+        return { ok: false, reason: 'corrupt_record' };
+    if (!record)
+        return { ok: false, reason: 'not_initialised' };
+    if (!record.currentInstallId)
+        return { ok: false, reason: 'no_identity' };
+    return {
+        ok: true,
+        config,
+        identity: { apiBaseHash: base, pluginId: config.pluginId, installId: record.currentInstallId },
+    };
+}
+/**
+ * Create this device's identity for a plugin, at the moment consent is granted.
+ *
+ * Consent is the only thing that may mint an install id: the id is an online
+ * identifier, so it must not exist before the user agreed to be identified. No
+ * network I/O happens here (ADR 16) — the record is local until the first
+ * upload enrols it, which is why being offline at consent time is harmless.
+ *
+ * Idempotent, and never throws: a plugin without a telemetry block simply has
+ * no identity to create, and a failure here must not prevent the user's consent
+ * decision from being recorded.
+ */
+function initialiseOnConsent(pluginRoot = (0, plugin_identity_1.resolvePluginRoot)()) {
+    try {
+        const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
+        if (!config)
+            return;
+        (0, registration_1.ensureInitialised)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId, (0, crypto_1.randomUUID)());
+    }
+    catch (error) {
+        process.stderr.write(`[workflowTelemetryAI:consent] could not initialise telemetry identity: ` +
+            `${error instanceof Error ? error.message : String(error)}\n`);
+    }
+}
+/** Human-readable form for the one place that must not fail silently: MCP. */
+function describeFailure(reason, detail) {
+    switch (reason) {
+        case 'not_configured':
+            return 'This plugin has no telemetry configuration, so there is nothing to record.';
+        case 'invalid_config':
+            return `The plugin's telemetry configuration is unusable: ${detail ?? 'unknown error'}`;
+        case 'not_initialised':
+            return 'Telemetry has not been initialised on this device. Consent must be granted first.';
+        case 'corrupt_record':
+            return 'The local registration record is unreadable. Reconnect this installation.';
+        case 'no_identity':
+            return 'This installation was superseded and has no current identity. Reconnect it.';
+    }
+}
+
+
+/***/ },
+
+/***/ 348
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.purgeInstallQueues = purgeInstallQueues;
+exports.purgeProjectQueues = purgeProjectQueues;
+const fs_1 = __importDefault(__webpack_require__(9896));
+const path_1 = __importDefault(__webpack_require__(6928));
+const config_1 = __webpack_require__(2478);
+const paths_1 = __webpack_require__(1830);
+const session_1 = __webpack_require__(1214);
+const paths_2 = __webpack_require__(1830);
+/**
+ * Cleanup of run queues that must no longer be delivered.
+ *
+ * Both callers rely on the same property: scanners resolve their queue path
+ * **exactly**, from `(apiBaseHash, pluginId, installId)`. A queue that no
+ * longer matches the current identity is therefore already unreachable the
+ * instant `registration.json` is replaced — that atomic write is the
+ * linearization point. Removing the directory afterwards is resumable,
+ * idempotent cleanup, not part of the transition, which is why a crash
+ * half-way through leaves nothing deliverable behind.
+ */
+function sessionsRoot() {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'claude-sessions');
+}
+function sessionIds() {
+    try {
+        return fs_1.default.readdirSync(sessionsRoot(), { withFileTypes: true })
+            .filter(e => e.isDirectory())
+            .map(e => e.name);
+    }
+    catch {
+        return [];
+    }
+}
+/**
+ * Drop every queue belonging to a superseded install, across all sessions.
+ * Called after a replacement swap; safe to call repeatedly.
+ */
+function purgeInstallQueues(apiBaseHash, pluginId, installId) {
+    let removed = 0;
+    for (const sessionId of sessionIds()) {
+        const dir = (0, paths_1.installQueueDir)(sessionId, { apiBaseHash, pluginId, installId });
+        if (!fs_1.default.existsSync(dir))
+            continue;
+        try {
+            fs_1.default.rmSync(dir, { recursive: true, force: true });
+            removed++;
+        }
+        catch {
+            // Left for the next invocation: cleanup is resumable by construction.
+        }
+    }
+    return removed;
+}
+/**
+ * Drop this plugin's queues for one project only.
+ *
+ * Consent is per (project, plugin) while the install is device-wide, so
+ * withdrawing in one project must not touch runs recorded in another project
+ * that is still consenting. Sessions carry their `projectDir`, so the project
+ * is what selects which sessions are purged — the install id is not involved.
+ */
+function purgeProjectQueues(identity, projectDir) {
+    const target = (0, paths_2.projectHash)(projectDir);
+    let removed = 0;
+    for (const sessionId of sessionIds()) {
+        let sessionProject;
+        try {
+            sessionProject = (0, session_1.readSessionContext)(sessionId).projectDir;
+        }
+        catch {
+            continue; // no context: cannot attribute it to a project, so leave it
+        }
+        if (!sessionProject || (0, paths_2.projectHash)(sessionProject) !== target)
+            continue;
+        const dir = (0, paths_1.installQueueDir)(sessionId, identity);
+        if (!fs_1.default.existsSync(dir))
+            continue;
+        try {
+            fs_1.default.rmSync(dir, { recursive: true, force: true });
+            removed++;
+        }
+        catch {
+            // resumable
+        }
+    }
+    return removed;
+}
 
 
 /***/ },
@@ -6248,7 +6446,8 @@ exports.recordLegacyEvent = recordLegacyEvent;
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const fs_1 = __importDefault(__webpack_require__(9896));
 const events_1 = __webpack_require__(9508);
-const config_1 = __webpack_require__(2478);
+const paths_1 = __webpack_require__(1830);
+const plugin_context_1 = __webpack_require__(5984);
 const session_1 = __webpack_require__(1214);
 const transcript_1 = __webpack_require__(2210);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -6257,8 +6456,23 @@ function assertSafeId(value, label) {
         throw new Error(`${label} contains unsupported characters or is too long`);
     }
 }
-function readEvents(sessionId, runId) {
-    const eventsPath = (0, config_1.getRunEventsPath)(sessionId, runId);
+/**
+ * Resolve the queue this process may write to, once per operation.
+ *
+ * Deliberately not memoized: the identity can be replaced between calls, and a
+ * cached one would keep appending to a queue that has been quarantined.
+ * Recording without an identity is refused outright — an unnamespaced run would
+ * be indistinguishable from another plugin's and could be delivered under the
+ * wrong credential.
+ */
+function requireIdentity() {
+    const context = (0, plugin_context_1.resolvePluginContext)();
+    if (!context.ok)
+        throw new Error((0, plugin_context_1.describeFailure)(context.reason, context.detail));
+    return context.identity;
+}
+function readEvents(identity, sessionId, runId) {
+    const eventsPath = (0, paths_1.runEventsPath)(sessionId, identity, runId);
     if (!fs_1.default.existsSync(eventsPath))
         return [];
     return fs_1.default.readFileSync(eventsPath, 'utf8')
@@ -6273,9 +6487,9 @@ function readEvents(sessionId, runId) {
         }
     });
 }
-function appendEvent(sessionId, runId, event) {
-    fs_1.default.mkdirSync((0, config_1.getRunDir)(sessionId, runId), { recursive: true });
-    fs_1.default.appendFileSync((0, config_1.getRunEventsPath)(sessionId, runId), JSON.stringify(event) + '\n');
+function appendEvent(identity, sessionId, runId, event) {
+    fs_1.default.mkdirSync((0, paths_1.runDir)(sessionId, identity, runId), { recursive: true });
+    fs_1.default.appendFileSync((0, paths_1.runEventsPath)(sessionId, identity, runId), JSON.stringify(event) + '\n');
 }
 function lastUuid(sessionId) {
     const context = (0, session_1.readSessionContext)(sessionId);
@@ -6310,9 +6524,10 @@ function startRun(sessionId, skillId, requestedRunId) {
     assertSafeId(sessionId, 'sessionId');
     assertSafeId(skillId, 'skillId');
     (0, session_1.readSessionContext)(sessionId);
+    const identity = requireIdentity();
     const runId = requestedRunId ?? crypto_1.default.randomUUID();
     assertSafeId(runId, 'runId');
-    const existing = readEvents(sessionId, runId);
+    const existing = readEvents(identity, sessionId, runId);
     if (existing.length > 0) {
         const first = existing[0];
         if (first.type === 'runStart' && first.skillId === skillId) {
@@ -6356,7 +6571,7 @@ function startRun(sessionId, skillId, requestedRunId) {
         skillId,
         runId,
     };
-    appendEvent(sessionId, runId, event);
+    appendEvent(identity, sessionId, runId, event);
     return {
         accepted: true,
         state: 'run_active',
@@ -6373,7 +6588,8 @@ function startStep(sessionId, runId, stepName) {
     assertSafeId(sessionId, 'sessionId');
     assertSafeId(runId, 'runId');
     assertSafeId(stepName, 'stepName');
-    const events = readEvents(sessionId, runId);
+    const identity = requireIdentity();
+    const events = readEvents(identity, sessionId, runId);
     if (!events.some(e => e.type === 'runStart'))
         throw new Error(`Unknown runId: ${runId}`);
     if (events.some(e => e.type === 'runEnd'))
@@ -6413,7 +6629,7 @@ function startStep(sessionId, runId, stepName) {
     const event = {
         type: 'stepStart', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, stepName,
     };
-    appendEvent(sessionId, runId, event);
+    appendEvent(identity, sessionId, runId, event);
     return {
         accepted: true,
         state: 'step_active',
@@ -6431,7 +6647,8 @@ function endStep(sessionId, runId, stepName) {
     assertSafeId(sessionId, 'sessionId');
     assertSafeId(runId, 'runId');
     assertSafeId(stepName, 'stepName');
-    const events = readEvents(sessionId, runId);
+    const identity = requireIdentity();
+    const events = readEvents(identity, sessionId, runId);
     if (!events.some(e => e.type === 'runStart'))
         throw new Error(`Unknown runId: ${runId}`);
     if (events.some(e => e.type === 'runEnd'))
@@ -6474,7 +6691,7 @@ function endStep(sessionId, runId, stepName) {
     const event = {
         type: 'stepEnd', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, stepName,
     };
-    appendEvent(sessionId, runId, event);
+    appendEvent(identity, sessionId, runId, event);
     return {
         accepted: true,
         state: 'run_active',
@@ -6491,7 +6708,8 @@ function endStep(sessionId, runId, stepName) {
 function endRun(sessionId, runId, status) {
     assertSafeId(sessionId, 'sessionId');
     assertSafeId(runId, 'runId');
-    const events = readEvents(sessionId, runId);
+    const identity = requireIdentity();
+    const events = readEvents(identity, sessionId, runId);
     if (!events.some(e => e.type === 'runStart'))
         throw new Error(`Unknown runId: ${runId}`);
     if (events.some(e => e.type === 'runEnd'))
@@ -6499,7 +6717,7 @@ function endRun(sessionId, runId, status) {
     const event = {
         type: 'runEnd', timestamp: new Date().toISOString(), lastUuid: lastUuid(sessionId), runId, status,
     };
-    appendEvent(sessionId, runId, event);
+    appendEvent(identity, sessionId, runId, event);
     return completedResult(runId);
 }
 function recordLegacyEvent(eventType, args) {
@@ -6527,6 +6745,556 @@ function recordLegacyEvent(eventType, args) {
 
 /***/ },
 
+/***/ 5106
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isTerminal = isTerminal;
+exports.terminalNotice = terminalNotice;
+exports.reconnect = reconnect;
+exports.disconnect = disconnect;
+exports.withdraw = withdraw;
+exports.status = status;
+const crypto_1 = __importDefault(__webpack_require__(6982));
+const plugin_context_1 = __webpack_require__(5984);
+const registration_1 = __webpack_require__(5644);
+const queue_maintenance_1 = __webpack_require__(348);
+const consent_1 = __webpack_require__(3943);
+const telemetry_config_1 = __webpack_require__(5740);
+const plugin_identity_1 = __webpack_require__(8834);
+/** States from which nothing will ever be delivered again without user action. */
+const TERMINAL = new Set([
+    'replacement_required',
+    'disconnected',
+    'disconnect_pending',
+    'configuration_blocked',
+]);
+function isTerminal(record) {
+    return !!record && TERMINAL.has(record.state);
+}
+/**
+ * Human-readable terminal notice, naming the action AND the tool that performs
+ * it. A notice that only says "telemetry is disconnected" leaves the user with
+ * nowhere to go.
+ */
+function terminalNotice(record) {
+    const reason = record.terminalError?.reason ?? record.state;
+    if (record.state === 'configuration_blocked') {
+        return `Telemetry is blocked: ${reason}. This needs a plugin update from its author — ` +
+            `no local action will fix it.`;
+    }
+    if (record.state === 'disconnect_pending') {
+        return `Telemetry is disconnecting (${reason}). The server has not acknowledged yet; ` +
+            `it is retried automatically. Call telemetry_reconnect to start collecting again.`;
+    }
+    return `Telemetry stopped: ${reason}. Call telemetry_reconnect to register this ` +
+        `installation again and resume collecting.`;
+}
+function context(pluginRoot) {
+    return (0, plugin_context_1.resolvePluginContext)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
+}
+/**
+ * Reconnect: retire the dead identity and adopt a fresh one.
+ *
+ * Permitted only from `replacement_required` or `disconnected` — from any other
+ * state this would abandon a live token, orphaning an installation server-side
+ * that nothing can ever revoke. Requires consent, because reconnecting resumes
+ * collection: it is rejected outright rather than deferred, since a deferred
+ * reconnect would need its own durable request flag.
+ */
+function reconnect(pluginRoot, consentCtx = {}) {
+    const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
+    if (!config) {
+        return { ok: false, code: 'NOT_CONFIGURED', message: 'This plugin has no telemetry configuration.' };
+    }
+    if ((0, consent_1.getConsent)(consentCtx) !== 'allow') {
+        return {
+            ok: false,
+            code: 'CONSENT_REQUIRED',
+            message: 'Telemetry consent is not granted for this project. Grant consent, then reconnect.',
+        };
+    }
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const release = (0, registration_1.acquireLock)(base, config.pluginId);
+    if (!release) {
+        return { ok: false, code: 'BUSY', message: 'Another telemetry operation is in progress. Try again.' };
+    }
+    try {
+        const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+        if (corrupt || !record) {
+            return { ok: false, code: 'NO_RECORD', message: 'No local telemetry state to reconnect.' };
+        }
+        if (!(0, registration_1.canReconnect)(record)) {
+            return {
+                ok: false,
+                code: 'NOT_RECONNECTABLE',
+                message: `Telemetry is ${record.state}; reconnect applies only after a disconnect or a failed installation.`,
+            };
+        }
+        const previous = record.currentInstallId;
+        (0, registration_1.beginReplacement)(base, config.pluginId, record, crypto_1.default.randomUUID());
+        // Post-commit cleanup. The record swap above is the linearization point —
+        // scanners resolve queues exactly, so the old ones are already unreachable.
+        if (previous)
+            (0, queue_maintenance_1.purgeInstallQueues)(base, config.pluginId, previous);
+        return {
+            ok: true,
+            code: 'RECONNECTED',
+            message: 'Telemetry reconnected. This installation registers again on its next upload.',
+        };
+    }
+    finally {
+        release();
+    }
+}
+/**
+ * Disconnect this device. Local only: the delivery layer performs and retries
+ * `DELETE /register`, so this succeeds offline and completes later.
+ */
+function disconnect(pluginRoot) {
+    const ctx = context(pluginRoot);
+    if (!ctx.ok) {
+        return { ok: false, code: 'NOT_CONFIGURED', message: 'This plugin has no telemetry configuration.' };
+    }
+    const base = ctx.identity.apiBaseHash;
+    const release = (0, registration_1.acquireLock)(base, ctx.config.pluginId);
+    if (!release) {
+        return { ok: false, code: 'BUSY', message: 'Another telemetry operation is in progress. Try again.' };
+    }
+    try {
+        const { record, corrupt } = (0, registration_1.readRecord)(base, ctx.config.pluginId);
+        if (corrupt || !record) {
+            return { ok: false, code: 'NO_RECORD', message: 'No local telemetry state to disconnect.' };
+        }
+        if (record.state === 'disconnected' || record.state === 'disconnect_pending') {
+            return { ok: true, code: 'ALREADY_DISCONNECTED', message: 'This installation is already disconnected.' };
+        }
+        (0, registration_1.beginDisconnect)(base, ctx.config.pluginId, record);
+        return {
+            ok: true,
+            code: 'DISCONNECTING',
+            message: 'Telemetry stopped. The server is notified on the next collector run, and retried until it acknowledges.',
+        };
+    }
+    finally {
+        release();
+    }
+}
+/**
+ * Withdraw consent for THIS project (Art. 7(3)).
+ *
+ * Deliberately narrower than disconnect: the install token is device-wide and
+ * may still be serving another project that is still consenting, so no server
+ * request is made and registration is untouched. Only this project's queued
+ * runs are purged.
+ */
+function withdraw(pluginRoot, consentCtx = {}) {
+    (0, consent_1.withdrawConsent)(consentCtx);
+    const ctx = context(pluginRoot);
+    let purged = 0;
+    if (ctx.ok && consentCtx.projectDir) {
+        purged = (0, queue_maintenance_1.purgeProjectQueues)(ctx.identity, consentCtx.projectDir);
+    }
+    return {
+        ok: true,
+        code: 'WITHDRAWN',
+        message: `Telemetry consent withdrawn for this project. ` +
+            `${purged > 0 ? `${purged} queued session(s) discarded. ` : ''}` +
+            `Data already delivered is unaffected; disconnect the installation to stop it device-wide.`,
+    };
+}
+function status(pluginRoot, consentCtx = {}) {
+    const ctx = context(pluginRoot);
+    if (!ctx.ok && ctx.reason === 'not_configured') {
+        return {
+            configured: false, state: null, installId: null, consent: null, terminalError: null,
+            needsAction: false, message: 'This plugin does not collect telemetry.',
+        };
+    }
+    const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
+    const base = config ? (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl) : null;
+    const record = base && config ? (0, registration_1.readRecord)(base, config.pluginId).record : null;
+    const consent = (0, consent_1.getConsent)(consentCtx);
+    return {
+        configured: true,
+        state: record?.state ?? null,
+        installId: record?.currentInstallId ?? null,
+        consent,
+        terminalError: record?.terminalError ?? null,
+        needsAction: isTerminal(record),
+        message: record
+            ? isTerminal(record)
+                ? terminalNotice(record)
+                : `Telemetry is ${record.state}; consent for this project is ${consent ?? 'not granted'}.`
+            : 'Telemetry has not been initialised on this device yet.',
+    };
+}
+
+
+/***/ },
+
+/***/ 5644
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LEASE_MS = void 0;
+exports.configFingerprint = configFingerprint;
+exports.readRecord = readRecord;
+exports.writeRecord = writeRecord;
+exports.ensureInitialised = ensureInitialised;
+exports.wasInitialised = wasInitialised;
+exports.leaseIsLive = leaseIsLive;
+exports.beginRegistering = beginRegistering;
+exports.completeAttempt = completeAttempt;
+exports.reclaimStaleLease = reclaimStaleLease;
+exports.beginReplacement = beginReplacement;
+exports.beginDisconnect = beginDisconnect;
+exports.markDisconnected = markDisconnected;
+exports.canReconnect = canReconnect;
+exports.markTerminal = markTerminal;
+exports.acquireLock = acquireLock;
+exports.blankRecord = blank;
+const fs_1 = __importDefault(__webpack_require__(9896));
+const crypto_1 = __importDefault(__webpack_require__(6982));
+const paths_1 = __webpack_require__(1830);
+const LEASE_MS = 2 * 60 * 1000;
+exports.LEASE_MS = LEASE_MS;
+function now() {
+    return new Date().toISOString();
+}
+function blank() {
+    return {
+        currentInstallId: null,
+        replacesInstallId: null,
+        state: 'never_registered',
+        token: null,
+        revision: 0,
+        operation: null,
+        lease: null,
+        terminalError: null,
+        configFingerprint: null,
+        blockedFrom: null,
+        createdAt: now(),
+        updatedAt: now(),
+    };
+}
+/** Fingerprint of the config fields that, if changed, should unblock. */
+function configFingerprint(parts) {
+    return crypto_1.default.createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16);
+}
+/**
+ * Read the record.
+ *
+ * Returns null when absent. A record that exists but is unreadable/corrupt is
+ * reported as corrupt so the caller can fail closed — it must never look like
+ * `never_registered`, which would silently re-enrol.
+ */
+function readRecord(apiBaseHash, pluginId) {
+    const p = (0, paths_1.registrationPath)(apiBaseHash, pluginId);
+    if (!fs_1.default.existsSync(p))
+        return { record: null, corrupt: false };
+    try {
+        const parsed = JSON.parse(fs_1.default.readFileSync(p, 'utf8'));
+        return isValidRecord(parsed)
+            ? { record: parsed, corrupt: false }
+            : { record: null, corrupt: true };
+    }
+    catch {
+        return { record: null, corrupt: true };
+    }
+}
+const STATES = [
+    'never_registered',
+    'registering',
+    'registered',
+    'replacement_required',
+    'disconnect_pending',
+    'disconnected',
+    'configuration_blocked',
+];
+/**
+ * Validate the whole record, not merely that `state` is a string.
+ *
+ * Syntactically valid corruption such as `{"state":"never_registered"}` would
+ * otherwise be accepted, mint a fresh UUID and silently enrol; an unknown state
+ * would fall off the end of the delivery switch; and `registered` could carry
+ * no install id or token.
+ */
+function isValidRecord(r) {
+    if (!r || typeof r !== 'object')
+        return false;
+    const rec = r;
+    if (!STATES.includes(rec.state))
+        return false;
+    if (typeof rec.revision !== 'number' || !Number.isInteger(rec.revision) || rec.revision < 0)
+        return false;
+    if (typeof rec.createdAt !== 'string' || typeof rec.updatedAt !== 'string')
+        return false;
+    if (rec.currentInstallId !== null && typeof rec.currentInstallId !== 'string')
+        return false;
+    if (rec.replacesInstallId !== null && typeof rec.replacesInstallId !== 'string')
+        return false;
+    if (rec.token !== null && typeof rec.token !== 'string')
+        return false;
+    // State-specific invariants.
+    const state = rec.state;
+    if (state === 'registered' && (!rec.token || !rec.currentInstallId))
+        return false;
+    if (state === 'registering' && (!rec.operation || !rec.lease))
+        return false;
+    if (state === 'never_registered' && !rec.currentInstallId)
+        return false;
+    return true;
+}
+/** Atomic replace — the linearization point for every state transition. */
+function writeRecord(apiBaseHash, pluginId, record) {
+    const dir = (0, paths_1.pluginStateDir)(apiBaseHash, pluginId);
+    fs_1.default.mkdirSync(dir, { recursive: true });
+    const next = { ...record, revision: record.revision + 1, updatedAt: now() };
+    const target = (0, paths_1.registrationPath)(apiBaseHash, pluginId);
+    const tmp = `${target}.${process.pid}.tmp`;
+    fs_1.default.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+    fs_1.default.renameSync(tmp, target);
+    return next;
+}
+/**
+ * Establish `never_registered` durably when consent first becomes allowed.
+ *
+ * Without this a deleted record is indistinguishable from a genuinely new
+ * install, so a wiped file would silently re-enrol. Uses create-if-absent under
+ * the caller's lock, so concurrent first consent in two projects yields exactly
+ * one identity.
+ */
+function ensureInitialised(apiBaseHash, pluginId, installId) {
+    const { record, corrupt } = readRecord(apiBaseHash, pluginId);
+    if (record && !corrupt)
+        return record;
+    // A record that is corrupt — or absent *after this plugin was already
+    // initialised* — must fail closed. Only a genuinely first-ever initialisation
+    // may create `never_registered`; otherwise deleting registration.json would
+    // silently mint a new identity while a token may still exist server-side.
+    if (corrupt || wasInitialised(apiBaseHash, pluginId)) {
+        return writeRecord(apiBaseHash, pluginId, {
+            ...blank(),
+            currentInstallId: null,
+            state: 'replacement_required',
+            terminalError: {
+                reason: corrupt ? 'corrupt_record' : 'missing_record',
+                at: now(),
+                action: 'reconnect',
+            },
+        });
+    }
+    markInitialised(apiBaseHash, pluginId);
+    return writeRecord(apiBaseHash, pluginId, {
+        ...blank(),
+        currentInstallId: installId,
+        state: 'never_registered',
+    });
+}
+/**
+ * A tiny durable marker, written once when a plugin is first initialised and
+ * never removed. It is what distinguishes "never installed here" from "the
+ * registration record was deleted", which the record itself cannot tell us.
+ */
+function initialisedMarkerPath(apiBaseHash, pluginId) {
+    return `${(0, paths_1.registrationPath)(apiBaseHash, pluginId)}.initialised`;
+}
+function wasInitialised(apiBaseHash, pluginId) {
+    return fs_1.default.existsSync(initialisedMarkerPath(apiBaseHash, pluginId));
+}
+function markInitialised(apiBaseHash, pluginId) {
+    fs_1.default.mkdirSync((0, paths_1.pluginStateDir)(apiBaseHash, pluginId), { recursive: true });
+    fs_1.default.writeFileSync(initialisedMarkerPath(apiBaseHash, pluginId), now(), { mode: 0o600 });
+}
+function leaseIsLive(record) {
+    if (!record.lease)
+        return false;
+    return new Date(record.lease.expiresAt).getTime() > Date.now();
+}
+/** Begin an attempt, persisting `registering` BEFORE any network I/O. */
+function beginRegistering(apiBaseHash, pluginId, record) {
+    const operationId = crypto_1.default.randomUUID();
+    const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
+    const next = writeRecord(apiBaseHash, pluginId, {
+        ...record,
+        state: 'registering',
+        operation: { id: operationId, kind: 'register', startedAt: now() },
+        lease: { owner, expiresAt: new Date(Date.now() + LEASE_MS).toISOString() },
+    });
+    return { record: next, operationId, owner };
+}
+/**
+ * Apply an attempt's outcome under an owner-CAS.
+ *
+ * A stale process's delayed response can arrive after another reclaimed the
+ * lease; applying it would overwrite newer state. This holds for FAILURES as
+ * much as successes — a late 401 must not clobber a since-replaced identity.
+ * Returns null when the outcome was discarded.
+ */
+function completeAttempt(apiBaseHash, pluginId, expect, apply) {
+    const { record, corrupt } = readRecord(apiBaseHash, pluginId);
+    if (corrupt || !record)
+        return null;
+    if (record.state !== 'registering' ||
+        record.operation?.id !== expect.operationId ||
+        record.lease?.owner !== expect.owner ||
+        record.revision !== expect.revision) {
+        return null; // superseded — discard rather than overwrite
+    }
+    return writeRecord(apiBaseHash, pluginId, {
+        ...apply(record),
+        operation: null,
+        lease: null,
+    });
+}
+/**
+ * Resolve a `registering` record whose owner is gone.
+ *
+ * A crash after the request was sent is indistinguishable from a lost response,
+ * so the identity is treated as ambiguous and requires replacement — never
+ * `never_registered`, which would re-enrol against a token that may exist.
+ */
+function reclaimStaleLease(apiBaseHash, pluginId, observed) {
+    const release = acquireLock(apiBaseHash, pluginId);
+    if (!release)
+        return null; // someone else is mid-operation; let them finish
+    try {
+        // Re-read under the lock and re-check EVERYTHING. The original owner can
+        // store its 201 between the stale read and this write; overwriting then
+        // would replace `registered` with `replacement_required` and destroy the
+        // only copy of the raw token.
+        const { record, corrupt } = readRecord(apiBaseHash, pluginId);
+        if (corrupt || !record)
+            return null;
+        if (record.state !== 'registering' ||
+            record.operation?.id !== observed.operation?.id ||
+            record.lease?.owner !== observed.lease?.owner ||
+            record.revision !== observed.revision ||
+            leaseIsLive(record)) {
+            return null; // no longer the same expired attempt
+        }
+        return writeRecord(apiBaseHash, pluginId, {
+            ...record,
+            state: 'replacement_required',
+            token: null,
+            operation: null,
+            lease: null,
+            terminalError: { reason: 'ambiguous_registration', at: now(), action: 'reconnect' },
+        });
+    }
+    finally {
+        release();
+    }
+}
+/**
+ * Swap in a replacement identity: new install id, previous one remembered for
+ * the eventual `/register`, back to `never_registered`.
+ *
+ * The atomic write of this record is the linearization point — quarantining the
+ * previous queue afterwards is idempotent, resumable cleanup.
+ */
+function beginReplacement(apiBaseHash, pluginId, record, newInstallId) {
+    return writeRecord(apiBaseHash, pluginId, {
+        ...record,
+        replacesInstallId: record.currentInstallId,
+        currentInstallId: newInstallId,
+        state: 'never_registered',
+        token: null,
+        terminalError: null,
+    });
+}
+/**
+ * Ask for this device to be disconnected. **Local only** (ADR 16): the delivery
+ * layer performs and retries `DELETE /register`.
+ *
+ * The token is kept, because the DELETE has to authenticate with it. It is
+ * cleared only once the server acknowledges, in `markDisconnected`.
+ */
+function beginDisconnect(apiBaseHash, pluginId, record) {
+    return writeRecord(apiBaseHash, pluginId, {
+        ...record,
+        state: 'disconnect_pending',
+        operation: null,
+        lease: null,
+        terminalError: {
+            reason: 'disconnect_requested',
+            at: now(),
+            action: 'reconnect',
+        },
+    });
+}
+/** The server acknowledged the disconnect. Only now is the credential dropped. */
+function markDisconnected(apiBaseHash, pluginId, record) {
+    return writeRecord(apiBaseHash, pluginId, {
+        ...record,
+        state: 'disconnected',
+        token: null,
+        terminalError: { reason: 'disconnected', at: now(), action: 'reconnect' },
+    });
+}
+/** States a replacement may be started from. Anything else would abandon a live token. */
+function canReconnect(record) {
+    return record.state === 'replacement_required' || record.state === 'disconnected';
+}
+function markTerminal(apiBaseHash, pluginId, record, state, error) {
+    return writeRecord(apiBaseHash, pluginId, {
+        ...record,
+        state,
+        token: state === 'replacement_required' ? null : record.token,
+        operation: null,
+        lease: null,
+        terminalError: error,
+    });
+}
+/**
+ * Acquire the cross-session registration lock. Returns null if already held.
+ *
+ * The lock carries an owner token and is released **only** if that token still
+ * matches. Otherwise: B takes over A's expired lock, A later releases
+ * unconditionally and deletes B's lock, and C enters concurrently with B. That
+ * is reachable in practice because the HTTP timeout is configurable beyond the
+ * lease.
+ */
+function acquireLock(apiBaseHash, pluginId) {
+    const dir = (0, paths_1.pluginStateDir)(apiBaseHash, pluginId);
+    fs_1.default.mkdirSync(dir, { recursive: true });
+    const lockPath = (0, paths_1.registrationLockPath)(apiBaseHash, pluginId);
+    try {
+        const age = Date.now() - fs_1.default.statSync(lockPath).mtimeMs;
+        if (age > LEASE_MS)
+            fs_1.default.unlinkSync(lockPath);
+    }
+    catch { /* no stale lock */ }
+    const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
+    try {
+        const fd = fs_1.default.openSync(lockPath, 'wx');
+        fs_1.default.writeSync(fd, owner);
+        fs_1.default.closeSync(fd);
+    }
+    catch {
+        return null;
+    }
+    return () => {
+        try {
+            if (fs_1.default.readFileSync(lockPath, 'utf8') === owner)
+                fs_1.default.unlinkSync(lockPath);
+        }
+        catch { /* already gone, or taken over by someone else */ }
+    };
+}
+
+
+/***/ },
+
 /***/ 2478
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -6540,9 +7308,6 @@ exports.getSessionDir = getSessionDir;
 exports.getContextPath = getContextPath;
 exports.getEventsPath = getEventsPath;
 exports.getCurrentSessionIdPath = getCurrentSessionIdPath;
-exports.getRunDir = getRunDir;
-exports.getRunEventsPath = getRunEventsPath;
-exports.getRunTranscriptSnapshotPath = getRunTranscriptSnapshotPath;
 const path_1 = __importDefault(__webpack_require__(6928));
 const os_1 = __importDefault(__webpack_require__(857));
 function getBaseDir() {
@@ -6561,14 +7326,156 @@ function getEventsPath(sessionId) {
 function getCurrentSessionIdPath() {
     return path_1.default.join(getBaseDir(), 'current-session-id.txt');
 }
-function getRunDir(sessionId, runId) {
-    return path_1.default.join(getSessionDir(sessionId), runId);
+
+
+/***/ },
+
+/***/ 1830
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.projectHash = projectHash;
+exports.pluginStateDir = pluginStateDir;
+exports.registrationPath = registrationPath;
+exports.registrationLockPath = registrationLockPath;
+exports.consentPath = consentPath;
+exports.installQueueDir = installQueueDir;
+exports.runDir = runDir;
+exports.runEventsPath = runEventsPath;
+exports.runTranscriptSnapshotPath = runTranscriptSnapshotPath;
+const path_1 = __importDefault(__webpack_require__(6928));
+const crypto_1 = __importDefault(__webpack_require__(6982));
+const config_1 = __webpack_require__(2478);
+/**
+ * Local layout, namespaced by API base **and** plugin.
+ *
+ *   servers/<apiBaseHash>/plugins/<pluginId>/
+ *     registration.json                     # authoritative: current install + state + token
+ *     projects/<projectHash>/consent.json   # per project
+ *
+ *   claude-sessions/<sessionId>/<apiBaseHash>/<pluginId>/<installId>/<runId>/
+ *
+ * The API base is part of every path, not just the credential key: two configs
+ * sharing a cloned pluginId but pointing at different bases (dev vs production)
+ * would otherwise scan and deliver each other's runs. `installId` is in the run
+ * path so a replacement install cannot inherit — and silently reattribute — the
+ * previous identity's queue.
+ */
+function projectHash(projectDir) {
+    const resolved = path_1.default.resolve(projectDir);
+    const canonical = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    return crypto_1.default.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
-function getRunEventsPath(sessionId, runId) {
-    return path_1.default.join(getRunDir(sessionId, runId), 'events.jsonl');
+function pluginStateDir(apiBaseHash, pluginId) {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'servers', apiBaseHash, 'plugins', pluginId);
 }
-function getRunTranscriptSnapshotPath(sessionId, runId) {
-    return path_1.default.join(getRunDir(sessionId, runId), 'transcript.snapshot.jsonl');
+/** The authoritative registration record: current install + state + token. */
+function registrationPath(apiBaseHash, pluginId) {
+    return path_1.default.join(pluginStateDir(apiBaseHash, pluginId), 'registration.json');
+}
+/** Cross-session lock guarding registration for (apiBase, plugin). */
+function registrationLockPath(apiBaseHash, pluginId) {
+    return path_1.default.join(pluginStateDir(apiBaseHash, pluginId), 'registration.lock');
+}
+/** Consent is per project, so it sits deeper than the device-wide registration. */
+function consentPath(apiBaseHash, pluginId, projectDir) {
+    return path_1.default.join(pluginStateDir(apiBaseHash, pluginId), 'projects', projectHash(projectDir), 'consent.json');
+}
+/** Run queue for one installation within one session. */
+function installQueueDir(sessionId, identity) {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'claude-sessions', sessionId, identity.apiBaseHash, identity.pluginId, identity.installId);
+}
+function runDir(sessionId, identity, runId) {
+    return path_1.default.join(installQueueDir(sessionId, identity), runId);
+}
+function runEventsPath(sessionId, identity, runId) {
+    return path_1.default.join(runDir(sessionId, identity, runId), 'events.jsonl');
+}
+function runTranscriptSnapshotPath(sessionId, identity, runId) {
+    return path_1.default.join(runDir(sessionId, identity, runId), 'transcript.snapshot.jsonl');
+}
+
+
+/***/ },
+
+/***/ 8834
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolvePluginRoot = resolvePluginRoot;
+exports.derivePluginName = derivePluginName;
+exports.pluginIdentity = pluginIdentity;
+exports.normalizeManifestName = normalizeManifestName;
+const fs_1 = __importDefault(__webpack_require__(9896));
+const path_1 = __importDefault(__webpack_require__(6928));
+/**
+ * Single source of truth for "which plugin am I running as".
+ *
+ * Consolidates three previously divergent implementations:
+ *   - sender.ts resolved the root from the running bundle path (correct for
+ *     detached hook-spawned children, which do NOT inherit CLAUDE_PLUGIN_ROOT)
+ *   - read-protocol.ts checked BOTH manifest locations (correct)
+ *   - consent.ts defaulted to the env var and checked only plugin.json (buggy
+ *     on both counts)
+ *
+ * Used by consent, protocol injection, and the ingest credential lookup so all
+ * three agree on identity.
+ */
+const FALLBACK_NAME = 'workflow-telemetry-ai';
+/**
+ * Resolve the plugin root.
+ *
+ * The bundle always ships at <pluginRoot>/scripts/workflowTelemetryAI.js, so
+ * the running script's own location is authoritative and works for every
+ * trigger path. CLAUDE_PLUGIN_ROOT is honored only as an explicit override
+ * (tests, manual runs) — hook-spawned children do not inherit it.
+ */
+function resolvePluginRoot(override = process.env.CLAUDE_PLUGIN_ROOT) {
+    if (override)
+        return override;
+    const scriptPath = process.argv[1];
+    if (!scriptPath)
+        return '';
+    return path_1.default.resolve(path_1.default.dirname(scriptPath), '..');
+}
+/**
+ * Read the manifest `name` for a plugin root, checking both supported manifest
+ * locations. Falls back to the collector's own name when unreadable.
+ */
+function derivePluginName(pluginRoot) {
+    if (!pluginRoot)
+        return FALLBACK_NAME;
+    const candidates = [
+        path_1.default.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+        path_1.default.join(pluginRoot, 'plugin.json'),
+    ];
+    for (const candidate of candidates) {
+        try {
+            const manifest = JSON.parse(fs_1.default.readFileSync(candidate, 'utf8'));
+            if (manifest.name)
+                return manifest.name;
+        }
+        catch {
+            // try the next candidate
+        }
+    }
+    return FALLBACK_NAME;
+}
+/** Convenience: resolve the root and read its manifest name in one step. */
+function pluginIdentity(pluginRoot = resolvePluginRoot()) {
+    return derivePluginName(pluginRoot);
+}
+/** Canonical manifest-name form — must match the server's normalization. */
+function normalizeManifestName(raw) {
+    return raw.trim().toLowerCase();
 }
 
 
@@ -6599,6 +7506,106 @@ function getCurrentSessionId() {
         throw new Error(`No active session found at ${p}. Did the SessionStart hook run?`);
     }
     return fs_1.default.readFileSync(p, 'utf8').trim();
+}
+
+
+/***/ },
+
+/***/ 5740
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CONFIG_FILENAME = exports.TelemetryConfigError = void 0;
+exports.normalizeApiBaseUrl = normalizeApiBaseUrl;
+exports.apiBaseHash = apiBaseHash;
+exports.loadTelemetryConfig = loadTelemetryConfig;
+const fs_1 = __importDefault(__webpack_require__(9896));
+const path_1 = __importDefault(__webpack_require__(6928));
+const crypto_1 = __importDefault(__webpack_require__(6982));
+/** A configuration problem that precedes any namespace — surfaced, not persisted. */
+class TelemetryConfigError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'TelemetryConfigError';
+    }
+}
+exports.TelemetryConfigError = TelemetryConfigError;
+const CONFIG_FILENAME = 'telemetry.config.json';
+exports.CONFIG_FILENAME = CONFIG_FILENAME;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Canonical form of an API base. MUST match the server's `normalizeServerUrl`
+ * byte for byte: lowercase scheme+host, default port stripped, trailing slash
+ * stripped. It is the URL component of every local key.
+ */
+function normalizeApiBaseUrl(raw) {
+    let url;
+    try {
+        url = new URL(raw.trim());
+    }
+    catch {
+        throw new TelemetryConfigError(`apiBaseUrl is not a valid URL: "${raw}"`);
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new TelemetryConfigError(`apiBaseUrl must use http or https, got "${url.protocol}"`);
+    }
+    const isDefaultPort = (url.protocol === 'http:' && url.port === '80') ||
+        (url.protocol === 'https:' && url.port === '443');
+    const host = isDefaultPort ? url.hostname.toLowerCase() : url.host.toLowerCase();
+    return `${url.protocol}//${host}${url.pathname.replace(/\/+$/, '')}`;
+}
+/** Short stable hash of the API base, used to namespace local state and queues. */
+function apiBaseHash(normalizedApiBaseUrl) {
+    return crypto_1.default.createHash('sha256').update(normalizedApiBaseUrl).digest('hex').slice(0, 16);
+}
+/**
+ * Read and validate the telemetry block.
+ *
+ * Returns null when the plugin simply is not telemetry-enabled (no file, or no
+ * `telemetry` key) — that is not an error. Throws `TelemetryConfigError` when
+ * the block exists but is unusable: a **missing or unparseable `apiBaseUrl`
+ * must fail closed**, never fall back to localhost, or a shipped plugin would
+ * quietly post to the end user's own machine.
+ */
+function loadTelemetryConfig(pluginRoot) {
+    if (!pluginRoot)
+        return null;
+    const configPath = path_1.default.join(pluginRoot, CONFIG_FILENAME);
+    if (!fs_1.default.existsSync(configPath))
+        return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(fs_1.default.readFileSync(configPath, 'utf-8'));
+    }
+    catch {
+        throw new TelemetryConfigError(`${CONFIG_FILENAME} is not valid JSON`);
+    }
+    const t = parsed?.telemetry;
+    if (!t || typeof t !== 'object')
+        return null;
+    const str = (key) => {
+        const v = t[key];
+        if (typeof v !== 'string' || !v.trim()) {
+            throw new TelemetryConfigError(`telemetry.${key} is missing or empty`);
+        }
+        return v.trim();
+    };
+    const pluginId = str('pluginId');
+    if (!UUID_RE.test(pluginId)) {
+        throw new TelemetryConfigError(`telemetry.pluginId must be a UUID, got "${pluginId}"`);
+    }
+    return {
+        apiBaseUrl: normalizeApiBaseUrl(str('apiBaseUrl')),
+        pluginId,
+        pluginKey: str('pluginKey'),
+        pluginName: str('pluginName'),
+        authorName: str('authorName'),
+        privacyPolicyUrl: str('privacyPolicyUrl'),
+    };
 }
 
 
@@ -34633,12 +35640,23 @@ const stdio_js_1 = __webpack_require__(6166);
 const zod_1 = __webpack_require__(7552);
 const events_1 = __webpack_require__(9508);
 const consent_1 = __webpack_require__(3943);
+const recovery_1 = __webpack_require__(5106);
+const registration_1 = __webpack_require__(5644);
+const telemetry_config_1 = __webpack_require__(5740);
 const record_event_1 = __webpack_require__(9741);
 const session_1 = __webpack_require__(1214);
+// Use the shared resolver, not the raw env var: the MCP process may not have
+// CLAUDE_PLUGIN_ROOT, and falling back to a generic plugin name would make two
+// different plugins in one project share a consent decision.
+const plugin_identity_1 = __webpack_require__(8834);
+const plugin_context_1 = __webpack_require__(5984);
 const id = zod_1.z.string().min(1).max(200);
 const resultSchema = zod_1.z.object({
     accepted: zod_1.z.boolean(),
-    state: zod_1.z.enum(['consent_required', 'consent_recorded', 'run_active', 'step_active', 'run_complete', 'error']),
+    state: zod_1.z.enum([
+        'consent_required', 'consent_recorded', 'run_active', 'step_active', 'run_complete',
+        'error', 'action_required', 'action_taken', 'status',
+    ]),
     runId: zod_1.z.string(),
     stepName: zod_1.z.string().optional(),
     delivery: zod_1.z.literal('awaiting_hook').optional(),
@@ -34684,12 +35702,50 @@ function consentContext(sessionId) {
     try {
         return {
             projectDir: (0, session_1.readSessionContext)(sessionId).projectDir,
-            pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
+            pluginRoot: (0, plugin_identity_1.resolvePluginRoot)(),
         };
     }
     catch {
-        return { pluginRoot: process.env.CLAUDE_PLUGIN_ROOT };
+        return { pluginRoot: (0, plugin_identity_1.resolvePluginRoot)() };
     }
+}
+/**
+ * Terminal states must be visible where the user actually is.
+ *
+ * The Stop-hook delivery path runs with `stdio: 'ignore'`, so a stopped
+ * installation produces no output anywhere. This is one of the two required
+ * automatic surfaces (the other is the SessionStart notice): the next telemetry
+ * tool call reports it, and names the tool that fixes it.
+ */
+function terminalBlocked(runId = '') {
+    const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
+    let config;
+    try {
+        config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
+    }
+    catch {
+        return null;
+    }
+    if (!config)
+        return null;
+    const { record } = (0, registration_1.readRecord)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId);
+    if (!(0, recovery_1.isTerminal)(record))
+        return null;
+    const blocked = record;
+    const fixable = blocked.state !== 'configuration_blocked';
+    return {
+        accepted: false,
+        state: 'action_required',
+        code: blocked.terminalError?.reason?.toUpperCase() ?? 'TELEMETRY_STOPPED',
+        runId,
+        nextExpectedTools: fixable ? ['telemetry_reconnect'] : [],
+        requiredNextAction: {
+            instruction: (0, recovery_1.terminalNotice)(blocked) +
+                ' Tell the user this once, then continue their work without retrying telemetry.',
+            tool: fixable ? 'telemetry_reconnect' : null,
+            when: 'immediately, then continue the user\'s work',
+        },
+    };
 }
 function consentRequired(sessionId, runId = '') {
     const consent = (0, consent_1.getConsent)(consentContext(sessionId));
@@ -34718,7 +35774,7 @@ server.registerTool('telemetry_set_consent', {
     description: 'Persist the user\'s explicit telemetry consent for this project and plugin. Call only after presenting the privacy disclosure and receiving the user\'s decision.',
     inputSchema: zod_1.z.object({
         sessionId: id.describe('Claude Code session ID supplied by the telemetry protocol.'),
-        decision: zod_1.z.enum(['allow', 'decline']),
+        decision: zod_1.z.enum(['allow', 'decline', 'withdraw']),
     }),
     outputSchema: resultSchema,
     _meta: alwaysLoad,
@@ -34730,13 +35786,36 @@ server.registerTool('telemetry_set_consent', {
     catch (error) {
         return failure(error);
     }
-    if (!(0, consent_1.confirmConsent)(decision, {
-        projectDir: session.projectDir,
-        pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
-    })) {
+    const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
+    const consentCtx = { projectDir: session.projectDir, pluginRoot };
+    // Withdrawal is NOT gated on a captured disclosure. Granting is, because
+    // agreement must be informed; withdrawal only ever reduces collection, and
+    // Art. 7(3) requires it to be as easy as granting — a gate here would make it
+    // strictly harder.
+    if (decision === 'withdraw') {
+        const result = (0, recovery_1.withdraw)(pluginRoot, consentCtx);
+        return toolResult({
+            accepted: true,
+            state: 'action_taken',
+            code: result.code,
+            runId: '',
+            nextExpectedTools: [],
+            requiredNextAction: {
+                instruction: result.message + ' Continue the user\'s work without telemetry.',
+                tool: null,
+                when: 'immediately',
+            },
+        });
+    }
+    if (!(0, consent_1.confirmConsent)(decision, consentCtx)) {
         return failure(new Error('Consent decision was not captured from the analytics disclosure.'));
     }
     const allowed = decision === 'allow';
+    // Consent is what mints the install id. It is an online identifier, so it
+    // must not exist before the user agreed to be identified — and it must exist
+    // before any run can be queued, since the queue is namespaced by it.
+    if (allowed)
+        (0, plugin_context_1.initialiseOnConsent)(pluginRoot);
     return toolResult({
         accepted: allowed,
         state: 'consent_recorded',
@@ -34760,6 +35839,9 @@ server.registerTool('telemetry_run_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, skillId }) => {
+    const stopped = terminalBlocked();
+    if (stopped)
+        return toolResult(stopped);
     const required = consentRequired(sessionId);
     if (required)
         return toolResult(required);
@@ -34776,6 +35858,9 @@ server.registerTool('telemetry_step_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
+    const stopped = terminalBlocked(runId);
+    if (stopped)
+        return toolResult(stopped);
     const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
@@ -34792,6 +35877,9 @@ server.registerTool('telemetry_step_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
+    const stopped = terminalBlocked(runId);
+    if (stopped)
+        return toolResult(stopped);
     const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
@@ -34807,16 +35895,78 @@ server.registerTool('telemetry_run_end', {
     inputSchema: zod_1.z.object({ sessionId: id, runId: id, status: zod_1.z.enum(['success', 'failure']) }),
     outputSchema: resultSchema,
     _meta: alwaysLoad,
-}, async ({ sessionId, runId, status }) => {
+}, async ({ sessionId, runId, status: runStatus }) => {
+    const stopped = terminalBlocked(runId);
+    if (stopped)
+        return toolResult(stopped);
     const required = consentRequired(sessionId, runId);
     if (required)
         return toolResult(required);
     try {
-        return toolResult((0, record_event_1.endRun)(sessionId, runId, status));
+        return toolResult((0, record_event_1.endRun)(sessionId, runId, runStatus));
     }
     catch (error) {
         return failure(error, runId);
     }
+});
+// --- recovery surfaces -------------------------------------------------------
+//
+// Terminal states are only escapable because these exist. They are the same
+// in-product surface as consent, and none of them performs network I/O — each
+// writes local state that the delivery layer acts on afterwards (ADR 16).
+function actionResult(result, nextTool = null) {
+    return toolResult({
+        accepted: result.ok,
+        state: result.ok ? 'action_taken' : 'action_required',
+        code: result.code,
+        runId: '',
+        nextExpectedTools: nextTool ? [nextTool] : [],
+        requiredNextAction: {
+            instruction: `${result.message} Report this to the user, then continue their work.`,
+            tool: nextTool,
+            when: 'immediately',
+        },
+    });
+}
+server.registerTool('telemetry_reconnect', {
+    description: 'Recover an installation whose telemetry stopped (revoked, disconnected, or a failed registration). ' +
+        'Registers a fresh installation locally; the next upload completes it. Call only when a telemetry ' +
+        'result told you telemetry is stopped.',
+    inputSchema: zod_1.z.object({ sessionId: id }),
+    outputSchema: resultSchema,
+    _meta: alwaysLoad,
+}, async ({ sessionId }) => {
+    const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
+    return actionResult((0, recovery_1.reconnect)(pluginRoot, consentContext(sessionId)), 'telemetry_run_start');
+});
+server.registerTool('telemetry_disconnect', {
+    description: 'Stop telemetry from this device entirely, for every project. Use when the user asks to stop ' +
+        'sending telemetry from this machine. To stop only this project, use telemetry_set_consent with ' +
+        'decision "withdraw" instead.',
+    inputSchema: zod_1.z.object({ sessionId: id }),
+    outputSchema: resultSchema,
+    _meta: alwaysLoad,
+}, async () => actionResult((0, recovery_1.disconnect)((0, plugin_identity_1.resolvePluginRoot)())));
+server.registerTool('telemetry_status', {
+    description: 'Report telemetry state for this plugin and project: whether it is collecting, the consent ' +
+        'decision, and any error requiring user action.',
+    inputSchema: zod_1.z.object({ sessionId: id }),
+    outputSchema: resultSchema,
+    _meta: alwaysLoad,
+}, async ({ sessionId }) => {
+    const report = (0, recovery_1.status)((0, plugin_identity_1.resolvePluginRoot)(), consentContext(sessionId));
+    return toolResult({
+        accepted: true,
+        state: 'status',
+        code: report.state ?? 'UNINITIALISED',
+        runId: '',
+        nextExpectedTools: report.needsAction ? ['telemetry_reconnect'] : [],
+        requiredNextAction: {
+            instruction: `${report.message} Relay this to the user verbatim.`,
+            tool: report.needsAction ? 'telemetry_reconnect' : null,
+            when: 'immediately',
+        },
+    });
 });
 async function main() {
     const transport = new stdio_js_1.StdioServerTransport();

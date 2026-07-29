@@ -1,4 +1,12 @@
 {
+  "telemetry": {
+    "apiBaseUrl": "http://localhost:3000",
+    "pluginId": "bc25d04e-f5c0-478c-a539-72669a2180d1",
+    "pluginKey": "wfta_pk_058631c8b443f4cc040d9f586b88854f75f3a53e635b7fce17f2a436bbba8af0",
+    "pluginName": "test-plugin",
+    "authorName": "Ofek Inc",
+    "privacyPolicyUrl": "https://google.com"
+  },
   "transcriptSanitizer": {
     "messageContent": {
       "mode": "custom",

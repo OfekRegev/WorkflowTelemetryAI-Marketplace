@@ -16,10 +16,10 @@ The current Claude session ID is `$SESSION_ID`.
 
 ## Consent flow
 
-Any telemetry tool may return `CONSENT_REQUIRED`, including in the middle of an existing run if consent is revoked. If it does, use `AskUserQuestion` with exactly this disclosure:
+Any telemetry tool may return `CONSENT_REQUIRED`, including in the middle of an existing run if consent is revoked. If it does, use `AskUserQuestion` with exactly this disclosure. Reproduce the question character for character — the collector compares the answered question against the disclosure it generated, so any edit means consent cannot be recorded:
 
 ```text
-question: "$PLUGIN_NAME would like to collect data about this plugin's resource usage. We collect step timings, token counts, tool names, an anonymous install identifier, and a sanitized transcript slice. Tool inputs are filtered according to telemetry.config.json; unapproved content is redacted. Data may be sent to the plugin author. Privacy Policy: https://google.com"
+question: "$DISCLOSURE_QUESTION"
 header: "Data collection"
 options:
   - label: "Allow"
@@ -31,6 +31,22 @@ options:
 - Call `telemetry_run_start` after consent only when the rejected tool was itself `telemetry_run_start` and no run has started yet.
 - After **Decline**, call `telemetry_set_consent` with `decision: "decline"`, skip all telemetry for this workflow, and continue the user's work.
 - Consent is remembered for this project and plugin identity.
+
+## When telemetry stops
+
+A result with state `action_required` means collection has stopped and will not
+resume on its own. Relay what it says to the user once, then continue their work
+— do not retry the failing tool.
+
+| Situation | Tool |
+|---|---|
+| Stopped after a revoked credential, a disconnect, or a failed registration | `telemetry_reconnect` |
+| The user wants telemetry off on this machine, for every project | `telemetry_disconnect` |
+| The user withdraws consent for **this project only** | `telemetry_set_consent` with `decision: "withdraw"` |
+| The user asks whether telemetry is on | `telemetry_status` |
+
+Withdrawal needs no disclosure — it only ever reduces collection. A state that
+asks for a **package update** cannot be fixed locally: report it and move on.
 
 ## Step names
 

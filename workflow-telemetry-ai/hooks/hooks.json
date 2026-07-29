@@ -7,12 +7,22 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "session-start"]
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "session-start",
+              "${CLAUDE_PLUGIN_ROOT}"
+            ]
           },
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "read-protocol", "${CLAUDE_PLUGIN_ROOT}"],
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "read-protocol",
+              "${CLAUDE_PLUGIN_ROOT}"
+            ],
             "statusMessage": "Loading telemetry protocol..."
           }
         ]
@@ -25,7 +35,11 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "session-end"]
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "session-end"
+            ]
           }
         ]
       }
@@ -37,19 +51,28 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "scan-and-send"]
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "scan-and-send"
+            ]
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__plugin_workflow-telemetry-ai_workflow-telemetry__telemetry_.*",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "check-mcp-permission"]
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "check-mcp-permission",
+              "${CLAUDE_PLUGIN_ROOT}"
+            ]
           }
         ]
       }
@@ -61,7 +84,12 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js", "hook", "capture-consent-response"]
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/workflowTelemetryAI.js",
+              "hook",
+              "capture-consent-response",
+              "${CLAUDE_PLUGIN_ROOT}"
+            ]
           }
         ]
       }
