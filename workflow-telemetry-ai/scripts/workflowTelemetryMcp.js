@@ -35641,6 +35641,7 @@ const zod_1 = __webpack_require__(7552);
 const events_1 = __webpack_require__(9508);
 const consent_1 = __webpack_require__(3943);
 const recovery_1 = __webpack_require__(5106);
+const plugin_context_1 = __webpack_require__(5984);
 const registration_1 = __webpack_require__(5644);
 const telemetry_config_1 = __webpack_require__(5740);
 const record_event_1 = __webpack_require__(9741);
@@ -35649,7 +35650,6 @@ const session_1 = __webpack_require__(1214);
 // CLAUDE_PLUGIN_ROOT, and falling back to a generic plugin name would make two
 // different plugins in one project share a consent decision.
 const plugin_identity_1 = __webpack_require__(8834);
-const plugin_context_1 = __webpack_require__(5984);
 const id = zod_1.z.string().min(1).max(200);
 const resultSchema = zod_1.z.object({
     accepted: zod_1.z.boolean(),
@@ -35766,6 +35766,33 @@ function consentRequired(sessionId, runId = '') {
         },
     };
 }
+/**
+ * The single gate every boundary tool passes through: terminal state, then
+ * consent, then identity.
+ *
+ * The last step is load-bearing and was missing. `telemetry_set_consent` used to
+ * be the only thing that created the install identity, so **consent granted with
+ * no identity was unrecoverable**: the consent gate passes, nothing ever calls
+ * set_consent again, and recording then throws "not initialised" forever with
+ * only a generic telemetry error to show for it.
+ *
+ * That state is ordinarily reached by upgrading from a build that had no
+ * identity concept, but also by simply losing the local state directory while
+ * consent survives in its own file. Creating the identity here is safe because
+ * it happens only *after* the consent gate has passed — the rule that matters is
+ * that no identifier exists before consent, not that only one code path may
+ * mint it. `ensureInitialised` is idempotent, so this is a no-op once present.
+ */
+function gate(sessionId, runId = '') {
+    const stopped = terminalBlocked(runId);
+    if (stopped)
+        return stopped;
+    const required = consentRequired(sessionId, runId);
+    if (required)
+        return required;
+    (0, plugin_context_1.initialiseOnConsent)((0, plugin_identity_1.resolvePluginRoot)());
+    return null;
+}
 const server = new mcp_js_1.McpServer({ name: 'workflow-telemetry-ai', version: '0.2.0' }, {
     instructions: 'These tools record workflow telemetry boundaries. After every call, read and follow the Required next action in the textual result. Preserve the returned runId for the entire run. Telemetry failures must never block the user\'s workflow.',
 });
@@ -35839,12 +35866,9 @@ server.registerTool('telemetry_run_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, skillId }) => {
-    const stopped = terminalBlocked();
-    if (stopped)
-        return toolResult(stopped);
-    const required = consentRequired(sessionId);
-    if (required)
-        return toolResult(required);
+    const blocked = gate(sessionId);
+    if (blocked)
+        return toolResult(blocked);
     try {
         return toolResult((0, record_event_1.startRun)(sessionId, skillId));
     }
@@ -35858,12 +35882,9 @@ server.registerTool('telemetry_step_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const stopped = terminalBlocked(runId);
-    if (stopped)
-        return toolResult(stopped);
-    const required = consentRequired(sessionId, runId);
-    if (required)
-        return toolResult(required);
+    const blocked = gate(sessionId, runId);
+    if (blocked)
+        return toolResult(blocked);
     try {
         return toolResult((0, record_event_1.startStep)(sessionId, runId, stepName));
     }
@@ -35877,12 +35898,9 @@ server.registerTool('telemetry_step_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const stopped = terminalBlocked(runId);
-    if (stopped)
-        return toolResult(stopped);
-    const required = consentRequired(sessionId, runId);
-    if (required)
-        return toolResult(required);
+    const blocked = gate(sessionId, runId);
+    if (blocked)
+        return toolResult(blocked);
     try {
         return toolResult((0, record_event_1.endStep)(sessionId, runId, stepName));
     }
@@ -35896,12 +35914,9 @@ server.registerTool('telemetry_run_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, status: runStatus }) => {
-    const stopped = terminalBlocked(runId);
-    if (stopped)
-        return toolResult(stopped);
-    const required = consentRequired(sessionId, runId);
-    if (required)
-        return toolResult(required);
+    const blocked = gate(sessionId, runId);
+    if (blocked)
+        return toolResult(blocked);
     try {
         return toolResult((0, record_event_1.endRun)(sessionId, runId, runStatus));
     }
