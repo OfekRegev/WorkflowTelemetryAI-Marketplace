@@ -6167,26 +6167,74 @@ exports.getCapturedConsent = getCapturedConsent;
 exports.captureConsent = captureConsent;
 exports.confirmConsent = confirmConsent;
 exports.withdrawConsent = withdrawConsent;
+exports.acquireConsentLock = acquireConsentLock;
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const fs_1 = __importDefault(__webpack_require__(9896));
 const path_1 = __importDefault(__webpack_require__(6928));
 const config_1 = __webpack_require__(2478);
 const plugin_identity_1 = __webpack_require__(8834);
+const telemetry_config_1 = __webpack_require__(5740);
+const file_lock_1 = __webpack_require__(4044);
 /**
- * Plugin identity for the consent key. Delegates to the shared resolver so
- * consent, protocol injection, and the ingest credential lookup cannot
- * disagree about which plugin is running.
+ * Consent is scoped to **what the user actually agreed to**, not merely to a
+ * package name.
+ *
+ * The key covers four things, and each closes a way consent could be
+ * misapplied:
+ *  - **project** — consent is per project by design (ADR 16)
+ *  - **API base** — otherwise a plugin repointed at a different server inherits
+ *    an `allow` granted for sending data somewhere else entirely
+ *  - **immutable pluginId** — otherwise a different author's package reusing the
+ *    same manifest name inherits the decision
+ *  - **disclosure fingerprint** — the user agreed to specific words naming a
+ *    specific recipient and policy. If the author, the name or the policy URL
+ *    changes, that agreement no longer covers what is now being asked, so the
+ *    key changes and the user is asked again.
+ *
+ * A plugin with no telemetry block has nothing to scope to and falls back to the
+ * package name; such a plugin records nothing anyway.
  */
-function pluginIdentity(root) {
-    return (0, plugin_identity_1.derivePluginName)((0, plugin_identity_1.resolvePluginRoot)(root));
-}
 function consentKey(context = {}) {
     const resolvedProject = path_1.default.resolve(context.projectDir || process.env.CLAUDE_PROJECT_DIR || process.cwd());
     const project = process.platform === 'win32' ? resolvedProject.toLowerCase() : resolvedProject;
-    return crypto_1.default.createHash('sha256').update(`${project}\0${pluginIdentity(context.pluginRoot)}`).digest('hex');
+    const root = (0, plugin_identity_1.resolvePluginRoot)(context.pluginRoot);
+    let scope;
+    try {
+        const config = (0, telemetry_config_1.loadTelemetryConfig)(root);
+        scope = config
+            ? [
+                (0, telemetry_config_1.normalizeApiBaseUrl)(config.apiBaseUrl),
+                config.pluginId,
+                disclosureFingerprint(config),
+            ].join('\0')
+            : (0, plugin_identity_1.derivePluginName)(root);
+    }
+    catch {
+        // An unusable telemetry block cannot be consented to; keep it distinct from
+        // every valid scope rather than silently reusing a neighbouring decision.
+        scope = `invalid-config\0${(0, plugin_identity_1.derivePluginName)(root)}`;
+    }
+    return crypto_1.default.createHash('sha256').update(`${project}\0${scope}`).digest('hex');
+}
+/**
+ * Fingerprint of the disclosure's material terms.
+ *
+ * Computed from the fields rather than by calling the disclosure builder, to
+ * avoid a circular import — the builder needs `ConsentDecision` from here. The
+ * round-trip test covers that these stay in step.
+ */
+function disclosureFingerprint(config) {
+    return crypto_1.default
+        .createHash('sha256')
+        .update([config.pluginName, config.authorName, config.privacyPolicyUrl].join('\0'))
+        .digest('hex')
+        .slice(0, 16);
 }
 function consentPath() {
     return path_1.default.join((0, config_1.getBaseDir)(), 'consent.json');
+}
+function consentLockPath() {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'consent.lock');
 }
 function readStore() {
     try {
@@ -6196,14 +6244,39 @@ function readStore() {
         return {};
     }
 }
-function writeRecord(record, context = {}) {
-    const store = readStore();
-    store[consentKey(context)] = record;
+/**
+ * Mutate one entry under the shared consent lock.
+ *
+ * The store is a single global map, so an unlocked read-modify-rename lets a
+ * concurrent writer's stale snapshot restore another project's pre-withdrawal
+ * `allow` — silently un-withdrawing consent. The mutation runs against a copy
+ * re-read *inside* the lock, never against one read before it.
+ *
+ * The critical section is two small file operations, so this waits for the lock
+ * rather than giving up: failing here would mean losing the very guarantee the
+ * lock exists to provide.
+ */
+function updateStore(context, mutate) {
     fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
-    const target = consentPath();
-    const temporary = `${target}.${process.pid}.tmp`;
-    fs_1.default.writeFileSync(temporary, JSON.stringify(store, null, 2));
-    fs_1.default.renameSync(temporary, target);
+    const release = (0, file_lock_1.acquireFileLock)(consentLockPath(), { leaseMs: 30000, waitMs: 5000 });
+    if (!release)
+        return false;
+    try {
+        const key = consentKey(context);
+        const store = readStore();
+        const next = mutate(store[key]);
+        if (!next)
+            return false;
+        store[key] = next;
+        const target = consentPath();
+        const temporary = `${target}.${process.pid}.${crypto_1.default.randomUUID().slice(0, 8)}.tmp`;
+        fs_1.default.writeFileSync(temporary, JSON.stringify(store, null, 2));
+        fs_1.default.renameSync(temporary, target);
+        return true;
+    }
+    finally {
+        release();
+    }
 }
 function getConsent(context = {}) {
     const record = readStore()[consentKey(context)];
@@ -6216,16 +6289,20 @@ function getCapturedConsent(context = {}) {
     return record?.status === 'captured' ? record.decision : null;
 }
 function captureConsent(decision, context = {}) {
-    const existing = readStore()[consentKey(context)];
-    if (existing?.status !== 'captured' && existing?.decision === decision)
-        return;
-    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'captured' }, context);
+    updateStore(context, existing => {
+        if (existing?.status !== 'captured' && existing?.decision === decision)
+            return null;
+        return { decision, updatedAt: new Date().toISOString(), status: 'captured' };
+    });
 }
 function confirmConsent(decision, context = {}) {
-    if (getCapturedConsent(context) !== decision)
-        return false;
-    writeRecord({ decision, updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
-    return true;
+    // Re-checked inside the lock: the captured decision this confirms could
+    // otherwise be replaced between the check and the write.
+    return updateStore(context, existing => {
+        if (existing?.status !== 'captured' || existing.decision !== decision)
+            return null;
+        return { decision, updatedAt: new Date().toISOString(), status: 'confirmed' };
+    });
 }
 /**
  * Withdraw consent for this project (GDPR Art. 7(3)).
@@ -6242,7 +6319,396 @@ function confirmConsent(decision, context = {}) {
  * separate action with a different blast radius.
  */
 function withdrawConsent(context = {}) {
-    writeRecord({ decision: 'withdrawn', updatedAt: new Date().toISOString(), status: 'confirmed' }, context);
+    updateStore(context, () => ({
+        decision: 'withdrawn',
+        updatedAt: new Date().toISOString(),
+        status: 'confirmed',
+    }));
+}
+/** Guard a section that must not interleave with a withdrawal for this scope. */
+function acquireConsentLock(waitMs = 5000) {
+    fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
+    return (0, file_lock_1.acquireFileLock)(consentLockPath(), { leaseMs: 30000, waitMs });
+}
+
+
+/***/ },
+
+/***/ 1836
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ensureInitialised = void 0;
+exports.reconcileConfigurationBlock = reconcileConfigurationBlock;
+exports.resolveDeliveryAuth = resolveDeliveryAuth;
+exports.processPendingDisconnect = processPendingDisconnect;
+exports.recordIngestTerminal = recordIngestTerminal;
+const crypto_1 = __importDefault(__webpack_require__(6982));
+const http_1 = __webpack_require__(3260);
+const telemetry_config_1 = __webpack_require__(5740);
+const registration_1 = __webpack_require__(5644);
+Object.defineProperty(exports, "ensureInitialised", ({ enumerable: true, get: function () { return registration_1.ensureInitialised; } }));
+function now() {
+    return new Date().toISOString();
+}
+/**
+ * Classify a registration failure by **how far the attempt got**.
+ *
+ * A definite pre-send failure means nothing reached the server, so the identity
+ * is still clean. Anything after the request was sent — timeout, lost response,
+ * ambiguous 5xx — may have committed a token server-side, so the identity is
+ * unusable and must be replaced. Guessing "no token" there would re-register an
+ * id that already exists and 409 forever.
+ */
+function isPreSendFailure(err) {
+    const code = err?.code ?? '';
+    return ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']
+        .includes(code);
+}
+/**
+ * Fingerprint of the config fields whose change should lift a
+ * `configuration_blocked` state — the enrolment key and the asserted plugin id.
+ */
+function fingerprintOf(config) {
+    return (0, registration_1.configFingerprint)({ pluginKey: config.pluginKey, pluginId: config.pluginId });
+}
+/**
+ * Lift a `configuration_blocked` state once the prescribed package update has
+ * actually happened. Returns the restored record, or null if still blocked.
+ *
+ * Must be callable from the **terminal/status** path, not only from delivery:
+ * the terminal gate rejects every telemetry boundary before a queue exists, so
+ * a delivery-only reconciliation could never run after the update it asked for
+ * — the state would be permanently blocked despite saying "update the package".
+ *
+ * Takes the shared lock and revalidates state and revision, because a
+ * concurrent disconnect could otherwise commit `disconnect_pending` and then be
+ * silently overwritten back to `never_registered`.
+ */
+function reconcileConfigurationBlock(config) {
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const release = (0, registration_1.acquireLock)(base, config.pluginId, { waitMs: 2000 });
+    if (!release)
+        return null;
+    try {
+        const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+        if (corrupt || !record)
+            return null;
+        if (record.state !== 'configuration_blocked')
+            return null;
+        if (!record.configFingerprint || record.configFingerprint === fingerprintOf(config)) {
+            return null; // the offending configuration is still in place
+        }
+        return (0, registration_1.writeRecord)(base, config.pluginId, {
+            ...record,
+            state: record.blockedFrom ?? 'never_registered',
+            blockedFrom: null,
+            terminalError: null,
+            configFingerprint: null,
+        });
+    }
+    finally {
+        release();
+    }
+}
+/**
+ * Resolve a credential for delivery, registering if this identity has never
+ * been registered. Returns the token, or why delivery cannot proceed.
+ */
+async function resolveDeliveryAuth(config) {
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+    // A record that exists but cannot be read must fail closed. It is NOT the
+    // same as never having registered — a token may exist server-side.
+    if (corrupt) {
+        return { kind: 'stop', reason: 'corrupt_record', action: 'reconnect' };
+    }
+    if (!record) {
+        // No record at all, and consent-time initialisation never ran. Treat as
+        // uninitialised rather than enrolling blind.
+        return { kind: 'defer', reason: 'not_initialised' };
+    }
+    return resolveFrom(config, base, record);
+}
+async function resolveFrom(config, base, record) {
+    switch (record.state) {
+        case 'registered':
+            return record.token
+                ? {
+                    kind: 'token',
+                    token: record.token,
+                    installId: record.currentInstallId,
+                    replacesInstallId: record.replacesInstallId,
+                }
+                : { kind: 'stop', reason: 'missing_credential', action: 'reconnect' };
+        case 'replacement_required':
+            return { kind: 'stop', reason: record.terminalError?.reason ?? 'replacement_required', action: 'reconnect' };
+        case 'disconnect_pending':
+        case 'disconnected':
+            return { kind: 'stop', reason: 'disconnected', action: 'reconnect' };
+        case 'configuration_blocked': {
+            const restored = reconcileConfigurationBlock(config);
+            if (restored)
+                return resolveFrom(config, base, restored);
+            return { kind: 'stop', reason: record.terminalError?.reason ?? 'configuration_blocked', action: 'update_package' };
+        }
+        case 'registering': {
+            if ((0, registration_1.leaseIsLive)(record))
+                return { kind: 'defer', reason: 'registration_in_flight' };
+            // The owner died. A crash after send is indistinguishable from a lost
+            // response, so the identity is ambiguous — not retryable. Reclamation
+            // re-checks under the lock; if it declines, the original owner finished
+            // in the meantime, so defer and re-read next time rather than assume.
+            const reclaimed = (0, registration_1.reclaimStaleLease)(base, config.pluginId, record);
+            return reclaimed
+                ? { kind: 'stop', reason: 'ambiguous_registration', action: 'reconnect' }
+                : { kind: 'defer', reason: 'reclaim_raced' };
+        }
+        case 'never_registered':
+            return enrol(config, base, record);
+    }
+}
+async function enrol(config, base, record) {
+    const installId = record.currentInstallId ?? crypto_1.default.randomUUID();
+    // One enrolment at a time per (apiBase, plugin) across ALL sessions.
+    const release = (0, registration_1.acquireLock)(base, config.pluginId);
+    if (!release)
+        return { kind: 'defer', reason: 'registration_in_flight' };
+    try {
+        // Re-read under the lock and fail closed. Falling back to the pre-lock
+        // snapshot would let a record deleted or corrupted while we waited proceed
+        // to enrolment against an identity that may already have a token.
+        const reread = (0, registration_1.readRecord)(base, config.pluginId);
+        if (reread.corrupt)
+            return { kind: 'stop', reason: 'corrupt_record', action: 'reconnect' };
+        if (!reread.record)
+            return { kind: 'stop', reason: 'missing_record', action: 'reconnect' };
+        const fresh = reread.record;
+        if (fresh.state === 'registered' && fresh.token) {
+            return {
+                kind: 'token',
+                token: fresh.token,
+                installId: fresh.currentInstallId,
+                replacesInstallId: fresh.replacesInstallId,
+            };
+        }
+        if (fresh.state !== 'never_registered') {
+            return { kind: 'defer', reason: 'state_changed' };
+        }
+        // Persist `registering` BEFORE any network I/O, so a crash is detectable.
+        const begun = (0, registration_1.beginRegistering)(base, config.pluginId, fresh);
+        const expect = {
+            operationId: begun.operationId,
+            owner: begun.owner,
+            revision: begun.record.revision,
+        };
+        let result;
+        try {
+            result = await (0, http_1.postJson)(`${config.apiBaseUrl}/register`, {
+                installId,
+                expectedPluginId: config.pluginId,
+                replacesInstallId: fresh.replacesInstallId ?? undefined,
+            }, { Authorization: `Bearer ${config.pluginKey}` });
+        }
+        catch (err) {
+            if (isPreSendFailure(err)) {
+                // Nothing reached the server: the identity is still clean, so this is
+                // simply retryable.
+                (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                    ...r,
+                    state: 'never_registered',
+                }));
+                return { kind: 'defer', reason: 'offline' };
+            }
+            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                ...r,
+                state: 'replacement_required',
+                token: null,
+                terminalError: { reason: 'ambiguous_registration', at: now(), action: 'reconnect' },
+            }));
+            return { kind: 'stop', reason: 'ambiguous_registration', action: 'reconnect' };
+        }
+        if (result.status === 201) {
+            const token = JSON.parse(result.body).token;
+            const applied = (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                ...r,
+                state: 'registered',
+                token,
+                currentInstallId: installId,
+                replacesInstallId: null, // consumed
+                terminalError: null,
+            }));
+            // A discarded outcome means another process moved the state on; defer
+            // rather than overwrite it.
+            return applied
+                ? { kind: 'token', token, installId, replacesInstallId: null }
+                : { kind: 'defer', reason: 'superseded' };
+        }
+        if (result.status === 409) {
+            // Either the plugin id disagreed with the key, or this install id already
+            // has a token server-side. Both are terminal for this identity.
+            const mismatch = safeReason(result.body) === 'plugin_id_mismatch';
+            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                ...r,
+                state: mismatch ? 'configuration_blocked' : 'replacement_required',
+                token: null,
+                blockedFrom: mismatch ? 'never_registered' : null,
+                // Stored so a corrected package can actually lift the block.
+                configFingerprint: mismatch ? fingerprintOf(config) : null,
+                terminalError: {
+                    reason: mismatch ? 'plugin_id_mismatch' : 'already_registered',
+                    at: now(),
+                    action: mismatch ? 'update_package' : 'reconnect',
+                },
+            }));
+            return mismatch
+                ? { kind: 'stop', reason: 'plugin_id_mismatch', action: 'update_package' }
+                : { kind: 'stop', reason: 'already_registered', action: 'reconnect' };
+        }
+        if (result.status === 401) {
+            // The enrolment key shipped in this package was revoked: a package update
+            // is required, and no other identity will help.
+            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                ...r,
+                state: 'configuration_blocked',
+                blockedFrom: 'never_registered',
+                configFingerprint: fingerprintOf(config),
+                terminalError: { reason: 'enrolment_key_revoked', at: now(), action: 'update_package' },
+            }));
+            return { kind: 'stop', reason: 'enrolment_key_revoked', action: 'update_package' };
+        }
+        // 5xx and anything else: the server may or may not have committed.
+        (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+            ...r,
+            state: 'replacement_required',
+            token: null,
+            terminalError: { reason: 'ambiguous_registration', at: now(), action: 'reconnect' },
+        }));
+        return { kind: 'stop', reason: 'ambiguous_registration', action: 'reconnect' };
+    }
+    finally {
+        release();
+    }
+}
+/**
+ * Complete a pending disconnect: `DELETE /register`, retried until the server
+ * acknowledges.
+ *
+ * Runs on **every** collector invocation, not only the one that requested the
+ * disconnect — a disconnect started in a session that has since closed would
+ * otherwise never complete, leaving the installation active server-side while
+ * the user believes they disconnected.
+ *
+ * A 401 counts as success: the route accepts already-terminated tokens
+ * precisely so a retry after a lost response works, so "this credential is
+ * gone" is exactly the end state being asked for. Only an unreachable or
+ * erroring server leaves it pending.
+ */
+async function processPendingDisconnect(config) {
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const release = (0, registration_1.acquireLock)(base, config.pluginId);
+    if (!release)
+        return false;
+    try {
+        const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+        if (corrupt || !record)
+            return false;
+        if (record.state !== 'disconnect_pending')
+            return false;
+        if (!record.token) {
+            // Nothing to revoke server-side; the local end state is still reached.
+            (0, registration_1.markDisconnected)(base, config.pluginId, record);
+            return true;
+        }
+        // Identity of the record this request speaks for. The lock is held across
+        // network I/O, but it can expire, so the response must be CAS'd rather than
+        // trusted: another process could complete the disconnect and reconnect a
+        // replacement in the meantime, and a delayed 200 applied blindly would
+        // overwrite that live replacement with a stale `disconnected`.
+        const sentFor = {
+            revision: record.revision,
+            installId: record.currentInstallId,
+            token: record.token,
+        };
+        let result;
+        try {
+            result = await (0, http_1.deleteJson)(`${config.apiBaseUrl}/register`, {
+                Authorization: `Bearer ${record.token}`,
+            });
+        }
+        catch {
+            return false; // offline: stay pending, retry next invocation
+        }
+        // A 401 counts as success: the route accepts already-terminated tokens
+        // precisely so a retry after a lost response works, so "this credential is
+        // gone" is the end state being asked for.
+        if (!((result.status >= 200 && result.status < 300) || result.status === 401)) {
+            return false; // 5xx and anything else: retry later
+        }
+        const fresh = (0, registration_1.readRecord)(base, config.pluginId);
+        if (fresh.corrupt || !fresh.record)
+            return false;
+        if (fresh.record.state !== 'disconnect_pending' ||
+            fresh.record.revision !== sentFor.revision ||
+            fresh.record.currentInstallId !== sentFor.installId ||
+            fresh.record.token !== sentFor.token) {
+            return false; // superseded while in flight — discard this outcome
+        }
+        (0, registration_1.markDisconnected)(base, config.pluginId, fresh.record);
+        return true;
+    }
+    finally {
+        release();
+    }
+}
+function safeReason(body) {
+    try {
+        return JSON.parse(body).reason ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Record a terminal ingest failure so it can be surfaced to the user.
+ *
+ * CAS'd against the credential that actually made the request: a delayed 401
+ * for a superseded token must not clear a newly registered one, nor overwrite
+ * `disconnect_pending`. Returns true only when the outcome was applied.
+ */
+function recordIngestTerminal(config, reason, 
+/** Identity of the credential used for the failed request. */
+sentWith) {
+    const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+    const release = (0, registration_1.acquireLock)(base, config.pluginId);
+    if (!release)
+        return false;
+    try {
+        const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
+        if (corrupt || !record)
+            return false;
+        // Only the still-current credential may be tombstoned by its own failure.
+        if (record.state !== 'registered' ||
+            record.currentInstallId !== sentWith.installId ||
+            record.token !== sentWith.token) {
+            return false; // superseded or already moved on — discard
+        }
+        // `unknown_token` is NOT treated as "re-enrol": a wiped or reset server must
+        // never cause a silent new identity. Both require an explicit reconnect.
+        (0, registration_1.markTerminal)(base, config.pluginId, record, 'replacement_required', {
+            reason,
+            at: now(),
+            action: 'reconnect',
+        });
+        return true;
+    }
+    finally {
+        release();
+    }
 }
 
 
@@ -6306,7 +6772,21 @@ function initialiseOnConsent(pluginRoot = (0, plugin_identity_1.resolvePluginRoo
         const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
         if (!config)
             return;
-        (0, registration_1.ensureInitialised)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId, (0, crypto_1.randomUUID)());
+        const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
+        // `ensureInitialised` assumes the caller holds the cross-session lock, and
+        // this path did not. Two projects consenting in separate processes both saw
+        // no record and returned different UUIDs; the marker-before-record
+        // interleaving could also make one of them write `replacement_required`
+        // during what was genuinely a first install.
+        const release = (0, registration_1.acquireLock)(base, config.pluginId, { waitMs: 5000 });
+        if (!release)
+            return; // another process is initialising; it wins, we no-op
+        try {
+            (0, registration_1.ensureInitialised)(base, config.pluginId, (0, crypto_1.randomUUID)());
+        }
+        finally {
+            release();
+        }
     }
     catch (error) {
         process.stderr.write(`[workflowTelemetryAI:consent] could not initialise telemetry identity: ` +
@@ -6758,6 +7238,7 @@ exports.terminalNotice = terminalNotice;
 exports.reconnect = reconnect;
 exports.disconnect = disconnect;
 exports.withdraw = withdraw;
+exports.nextActionFor = nextActionFor;
 exports.status = status;
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const plugin_context_1 = __webpack_require__(5984);
@@ -6788,8 +7269,10 @@ function terminalNotice(record) {
             `no local action will fix it.`;
     }
     if (record.state === 'disconnect_pending') {
+        // Reconnect is refused from here — the disconnect is still owed an
+        // acknowledgement, and it completes on the next collector run.
         return `Telemetry is disconnecting (${reason}). The server has not acknowledged yet; ` +
-            `it is retried automatically. Call telemetry_reconnect to start collecting again.`;
+            `it is retried automatically. Once it completes, reconnect to start collecting again.`;
     }
     return `Telemetry stopped: ${reason}. Call telemetry_reconnect to register this ` +
         `installation again and resume collecting.`;
@@ -6907,12 +7390,34 @@ function withdraw(pluginRoot, consentCtx = {}) {
             `Data already delivered is unaffected; disconnect the installation to stop it device-wide.`,
     };
 }
+/**
+ * The action that is actually valid for a state — not simply "reconnect".
+ *
+ * `disconnect_pending` and `configuration_blocked` are both terminal, but
+ * `canReconnect` rejects both: the first is still owed a server acknowledgement,
+ * and the second needs a corrected package. Prescribing a tool that will refuse
+ * teaches the model to retry something guaranteed to fail.
+ */
+function nextActionFor(record) {
+    if (!record || !isTerminal(record))
+        return null;
+    return (0, registration_1.canReconnect)(record) ? 'telemetry_reconnect' : null;
+}
 function status(pluginRoot, consentCtx = {}) {
     const ctx = context(pluginRoot);
     if (!ctx.ok && ctx.reason === 'not_configured') {
         return {
             configured: false, state: null, installId: null, consent: null, terminalError: null,
             needsAction: false, message: 'This plugin does not collect telemetry.',
+        };
+    }
+    // A broken or unreadable config is actionable information, not a reason to
+    // report "uninitialised" or to throw out of a status command.
+    if (!ctx.ok && (ctx.reason === 'invalid_config' || ctx.reason === 'corrupt_record')) {
+        return {
+            configured: true, state: ctx.reason, installId: null, consent: (0, consent_1.getConsent)(consentCtx),
+            terminalError: null, needsAction: true,
+            message: (0, plugin_context_1.describeFailure)(ctx.reason, ctx.detail),
         };
     }
     const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
@@ -6963,8 +7468,10 @@ exports.markTerminal = markTerminal;
 exports.acquireLock = acquireLock;
 exports.blankRecord = blank;
 const fs_1 = __importDefault(__webpack_require__(9896));
+const path_1 = __importDefault(__webpack_require__(6928));
 const crypto_1 = __importDefault(__webpack_require__(6982));
 const paths_1 = __webpack_require__(1830);
+const file_lock_1 = __webpack_require__(4044);
 const LEASE_MS = 2 * 60 * 1000;
 exports.LEASE_MS = LEASE_MS;
 function now() {
@@ -7105,15 +7612,13 @@ function ensureInitialised(apiBaseHash, pluginId, installId) {
  * never removed. It is what distinguishes "never installed here" from "the
  * registration record was deleted", which the record itself cannot tell us.
  */
-function initialisedMarkerPath(apiBaseHash, pluginId) {
-    return `${(0, paths_1.registrationPath)(apiBaseHash, pluginId)}.initialised`;
-}
 function wasInitialised(apiBaseHash, pluginId) {
-    return fs_1.default.existsSync(initialisedMarkerPath(apiBaseHash, pluginId));
+    return fs_1.default.existsSync((0, paths_1.initialisedMarkerPath)(apiBaseHash, pluginId));
 }
 function markInitialised(apiBaseHash, pluginId) {
-    fs_1.default.mkdirSync((0, paths_1.pluginStateDir)(apiBaseHash, pluginId), { recursive: true });
-    fs_1.default.writeFileSync(initialisedMarkerPath(apiBaseHash, pluginId), now(), { mode: 0o600 });
+    const marker = (0, paths_1.initialisedMarkerPath)(apiBaseHash, pluginId);
+    fs_1.default.mkdirSync(path_1.default.dirname(marker), { recursive: true });
+    fs_1.default.writeFileSync(marker, now(), { mode: 0o600 });
 }
 function leaseIsLive(record) {
     if (!record.lease)
@@ -7264,32 +7769,12 @@ function markTerminal(apiBaseHash, pluginId, record, state, error) {
  * is reachable in practice because the HTTP timeout is configurable beyond the
  * lease.
  */
-function acquireLock(apiBaseHash, pluginId) {
-    const dir = (0, paths_1.pluginStateDir)(apiBaseHash, pluginId);
-    fs_1.default.mkdirSync(dir, { recursive: true });
-    const lockPath = (0, paths_1.registrationLockPath)(apiBaseHash, pluginId);
-    try {
-        const age = Date.now() - fs_1.default.statSync(lockPath).mtimeMs;
-        if (age > LEASE_MS)
-            fs_1.default.unlinkSync(lockPath);
-    }
-    catch { /* no stale lock */ }
-    const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
-    try {
-        const fd = fs_1.default.openSync(lockPath, 'wx');
-        fs_1.default.writeSync(fd, owner);
-        fs_1.default.closeSync(fd);
-    }
-    catch {
-        return null;
-    }
-    return () => {
-        try {
-            if (fs_1.default.readFileSync(lockPath, 'utf8') === owner)
-                fs_1.default.unlinkSync(lockPath);
-        }
-        catch { /* already gone, or taken over by someone else */ }
-    };
+function acquireLock(apiBaseHash, pluginId, opts = {}) {
+    fs_1.default.mkdirSync((0, paths_1.pluginStateDir)(apiBaseHash, pluginId), { recursive: true });
+    return (0, file_lock_1.acquireFileLock)((0, paths_1.registrationLockPath)(apiBaseHash, pluginId), {
+        leaseMs: LEASE_MS,
+        waitMs: opts.waitMs,
+    });
 }
 
 
@@ -7330,6 +7815,147 @@ function getCurrentSessionIdPath() {
 
 /***/ },
 
+/***/ 4044
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_LEASE_MS = void 0;
+exports.acquireFileLock = acquireFileLock;
+const fs_1 = __importDefault(__webpack_require__(9896));
+const path_1 = __importDefault(__webpack_require__(6928));
+const crypto_1 = __importDefault(__webpack_require__(6982));
+/**
+ * A cross-process advisory lock backed by exclusive file creation.
+ *
+ * The lock carries an **owner token** and is released only if that token still
+ * matches. Without it: B takes over A's expired lock, A later releases
+ * unconditionally and deletes B's lock, and C then enters concurrently with B.
+ * That is reachable in practice, because the registration HTTP timeout is
+ * configurable well beyond the lease.
+ *
+ * Extracted so consent and registration share one implementation — they guard
+ * different state but have to interleave correctly, and two subtly different
+ * lock implementations is how that stops being true.
+ */
+exports.DEFAULT_LEASE_MS = 2 * 60 * 1000;
+/** Acquire, or return null if it stays held for the whole wait window. */
+function acquireFileLock(lockPath, { leaseMs = exports.DEFAULT_LEASE_MS, waitMs = 0 } = {}) {
+    fs_1.default.mkdirSync(path_1.default.dirname(lockPath), { recursive: true });
+    const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+        try {
+            const age = Date.now() - fs_1.default.statSync(lockPath).mtimeMs;
+            if (age > leaseMs)
+                fs_1.default.unlinkSync(lockPath);
+        }
+        catch { /* no lock file */ }
+        try {
+            const fd = fs_1.default.openSync(lockPath, 'wx');
+            fs_1.default.writeSync(fd, owner);
+            fs_1.default.closeSync(fd);
+            return () => {
+                try {
+                    if (fs_1.default.readFileSync(lockPath, 'utf8') === owner)
+                        fs_1.default.unlinkSync(lockPath);
+                }
+                catch { /* already gone, or taken over after our lease expired */ }
+            };
+        }
+        catch {
+            if (Date.now() >= deadline)
+                return null;
+            sleepBriefly();
+        }
+    }
+}
+/**
+ * Block for a few milliseconds without a timer.
+ *
+ * These call sites are synchronous (hooks and MCP handlers that must complete
+ * before returning), so there is no event loop to yield to. `Atomics.wait` is
+ * the only way to sleep without spinning the CPU.
+ */
+function sleepBriefly() {
+    const shared = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(shared), 0, 0, 15);
+}
+
+
+/***/ },
+
+/***/ 3260
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.postJson = postJson;
+exports.deleteJson = deleteJson;
+const http_1 = __importDefault(__webpack_require__(8611));
+const https_1 = __importDefault(__webpack_require__(5692));
+function postJson(url, body, extraHeaders = {}) {
+    return sendJson('POST', url, body, extraHeaders);
+}
+function deleteJson(url, extraHeaders = {}) {
+    return sendJson('DELETE', url, {}, extraHeaders);
+}
+function sendJson(method, url, body, extraHeaders = {}) {
+    return new Promise((resolve, reject) => {
+        // Single-settlement: several failure paths can fire for one request, and a
+        // late settle must not resurrect a promise the caller already handled.
+        let settled = false;
+        const settle = (err, value) => {
+            if (settled)
+                return;
+            settled = true;
+            if (err)
+                reject(err);
+            else
+                resolve(value);
+        };
+        const payload = JSON.stringify(body);
+        const parsed = new URL(url);
+        const lib = parsed.protocol === 'https:' ? https_1.default : http_1.default;
+        const req = lib.request({
+            hostname: parsed.hostname,
+            port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+            path: parsed.pathname + (parsed.search || ''),
+            method,
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+                ...extraHeaders
+            }
+        }, res => {
+            let resp = '';
+            res.on('data', c => resp += c);
+            res.on('end', () => settle(null, { status: res.statusCode || 200, body: resp }));
+            // A server that sends headers (or a partial body) and then drops the
+            // socket would otherwise leave this promise unsettled forever, holding
+            // the caller's registration lock past any lease.
+            res.on('aborted', () => settle(new Error('Response aborted by server')));
+            res.on('error', err => settle(err));
+        });
+        req.on('error', err => settle(err));
+        const timeoutMs = Number(process.env.WORKFLOW_TELEMETRY_HTTP_TIMEOUT_MS || 5000);
+        req.setTimeout(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000, () => {
+            req.destroy(new Error('Telemetry upload timed out'));
+        });
+        req.write(payload);
+        req.end();
+    });
+}
+
+
+/***/ },
+
 /***/ 1830
 (__unused_webpack_module, exports, __webpack_require__) {
 
@@ -7342,6 +7968,7 @@ exports.projectHash = projectHash;
 exports.pluginStateDir = pluginStateDir;
 exports.registrationPath = registrationPath;
 exports.registrationLockPath = registrationLockPath;
+exports.initialisedMarkerPath = initialisedMarkerPath;
 exports.consentPath = consentPath;
 exports.installQueueDir = installQueueDir;
 exports.runDir = runDir;
@@ -7380,6 +8007,19 @@ function registrationPath(apiBaseHash, pluginId) {
 /** Cross-session lock guarding registration for (apiBase, plugin). */
 function registrationLockPath(apiBaseHash, pluginId) {
     return path_1.default.join(pluginStateDir(apiBaseHash, pluginId), 'registration.lock');
+}
+/**
+ * Durable evidence that this plugin was initialised on this device.
+ *
+ * Deliberately NOT under `pluginStateDir`. Kept there, removing the plugin
+ * state directory destroys the record *and* the evidence it ever existed, so
+ * the next boundary treats the device as first-ever and silently mints a new
+ * identity — orphaning a token still active on the server. Stored beside
+ * `consent.json` instead, so the evidence shares a failure domain with consent:
+ * anything that loses both genuinely is a new device.
+ */
+function initialisedMarkerPath(apiBaseHash, pluginId) {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'installed', `${apiBaseHash}.${pluginId}.initialised`);
 }
 /** Consent is per project, so it sits deeper than the device-wide registration. */
 function consentPath(apiBaseHash, pluginId, projectDir) {
@@ -7651,6 +8291,20 @@ module.exports = require("crypto");
 (module) {
 
 module.exports = require("fs");
+
+/***/ },
+
+/***/ 8611
+(module) {
+
+module.exports = require("http");
+
+/***/ },
+
+/***/ 5692
+(module) {
+
+module.exports = require("https");
 
 /***/ },
 
@@ -35643,6 +36297,7 @@ const consent_1 = __webpack_require__(3943);
 const recovery_1 = __webpack_require__(5106);
 const plugin_context_1 = __webpack_require__(5984);
 const registration_1 = __webpack_require__(5644);
+const delivery_auth_1 = __webpack_require__(1836);
 const telemetry_config_1 = __webpack_require__(5740);
 const record_event_1 = __webpack_require__(9741);
 const session_1 = __webpack_require__(1214);
@@ -35728,21 +36383,28 @@ function terminalBlocked(runId = '') {
     }
     if (!config)
         return null;
+    // Give a corrected package a chance to unblock before reporting a terminal
+    // state: this gate runs before any queue exists, so it is the only place a
+    // configuration_blocked installation can ever be reconciled.
+    (0, delivery_auth_1.reconcileConfigurationBlock)(config);
     const { record } = (0, registration_1.readRecord)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId);
     if (!(0, recovery_1.isTerminal)(record))
         return null;
     const blocked = record;
-    const fixable = blocked.state !== 'configuration_blocked';
+    // Only prescribe a tool the state will actually accept: canReconnect refuses
+    // both configuration_blocked and disconnect_pending.
+    const action = (0, recovery_1.nextActionFor)(blocked);
+    const fixable = action !== null;
     return {
         accepted: false,
         state: 'action_required',
         code: blocked.terminalError?.reason?.toUpperCase() ?? 'TELEMETRY_STOPPED',
         runId,
-        nextExpectedTools: fixable ? ['telemetry_reconnect'] : [],
+        nextExpectedTools: action ? [action] : [],
         requiredNextAction: {
             instruction: (0, recovery_1.terminalNotice)(blocked) +
                 ' Tell the user this once, then continue their work without retrying telemetry.',
-            tool: fixable ? 'telemetry_reconnect' : null,
+            tool: action,
             when: 'immediately, then continue the user\'s work',
         },
     };
@@ -35783,15 +36445,43 @@ function consentRequired(sessionId, runId = '') {
  * that no identifier exists before consent, not that only one code path may
  * mint it. `ensureInitialised` is idempotent, so this is a no-op once present.
  */
-function gate(sessionId, runId = '') {
+function gated(sessionId, runId, record) {
     const stopped = terminalBlocked(runId);
     if (stopped)
         return stopped;
-    const required = consentRequired(sessionId, runId);
-    if (required)
-        return required;
-    (0, plugin_context_1.initialiseOnConsent)((0, plugin_identity_1.resolvePluginRoot)());
-    return null;
+    // The consent check and the queue write are ONE boundary. Between a bare
+    // check and the write, a withdrawal in another process can commit and purge
+    // this project's queue — and the recorder then recreates it, leaving a queue
+    // that no consent covers. Holding the lock across both means withdrawal
+    // either happens entirely before (we see it and refuse) or entirely after
+    // (it purges a queue that is already complete).
+    const release = (0, consent_1.acquireConsentLock)();
+    if (!release) {
+        // Contended for the whole wait window. Refuse rather than record without
+        // the guarantee: telemetry may be lost, the user's work is unaffected.
+        return {
+            accepted: false,
+            state: 'error',
+            code: 'TELEMETRY_BUSY',
+            runId,
+            nextExpectedTools: [],
+            requiredNextAction: {
+                instruction: 'Continue the user\'s work. Telemetry was busy and skipped this event.',
+                tool: null,
+                when: 'immediately',
+            },
+        };
+    }
+    try {
+        const required = consentRequired(sessionId, runId);
+        if (required)
+            return required;
+        (0, plugin_context_1.initialiseOnConsent)((0, plugin_identity_1.resolvePluginRoot)());
+        return record();
+    }
+    finally {
+        release();
+    }
 }
 const server = new mcp_js_1.McpServer({ name: 'workflow-telemetry-ai', version: '0.2.0' }, {
     instructions: 'These tools record workflow telemetry boundaries. After every call, read and follow the Required next action in the textual result. Preserve the returned runId for the entire run. Telemetry failures must never block the user\'s workflow.',
@@ -35866,11 +36556,8 @@ server.registerTool('telemetry_run_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, skillId }) => {
-    const blocked = gate(sessionId);
-    if (blocked)
-        return toolResult(blocked);
     try {
-        return toolResult((0, record_event_1.startRun)(sessionId, skillId));
+        return toolResult(gated(sessionId, '', () => (0, record_event_1.startRun)(sessionId, skillId)));
     }
     catch (error) {
         return failure(error);
@@ -35882,11 +36569,8 @@ server.registerTool('telemetry_step_start', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const blocked = gate(sessionId, runId);
-    if (blocked)
-        return toolResult(blocked);
     try {
-        return toolResult((0, record_event_1.startStep)(sessionId, runId, stepName));
+        return toolResult(gated(sessionId, runId, () => (0, record_event_1.startStep)(sessionId, runId, stepName)));
     }
     catch (error) {
         return failure(error, runId);
@@ -35898,11 +36582,8 @@ server.registerTool('telemetry_step_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, stepName }) => {
-    const blocked = gate(sessionId, runId);
-    if (blocked)
-        return toolResult(blocked);
     try {
-        return toolResult((0, record_event_1.endStep)(sessionId, runId, stepName));
+        return toolResult(gated(sessionId, runId, () => (0, record_event_1.endStep)(sessionId, runId, stepName)));
     }
     catch (error) {
         return failure(error, runId);
@@ -35914,11 +36595,8 @@ server.registerTool('telemetry_run_end', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId, runId, status: runStatus }) => {
-    const blocked = gate(sessionId, runId);
-    if (blocked)
-        return toolResult(blocked);
     try {
-        return toolResult((0, record_event_1.endRun)(sessionId, runId, runStatus));
+        return toolResult(gated(sessionId, runId, () => (0, record_event_1.endRun)(sessionId, runId, runStatus)));
     }
     catch (error) {
         return failure(error, runId);
@@ -35969,16 +36647,29 @@ server.registerTool('telemetry_status', {
     outputSchema: resultSchema,
     _meta: alwaysLoad,
 }, async ({ sessionId }) => {
-    const report = (0, recovery_1.status)((0, plugin_identity_1.resolvePluginRoot)(), consentContext(sessionId));
+    const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
+    const report = (0, recovery_1.status)(pluginRoot, consentContext(sessionId));
+    // Reconnect is only offered when the state accepts it — a corrupt config or a
+    // pending disconnect needs action, but not *this* action.
+    const config = (() => { try {
+        return (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
+    }
+    catch {
+        return null;
+    } })();
+    const record = config
+        ? (0, registration_1.readRecord)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId).record
+        : null;
+    const statusAction = (0, recovery_1.nextActionFor)(record);
     return toolResult({
         accepted: true,
         state: 'status',
         code: report.state ?? 'UNINITIALISED',
         runId: '',
-        nextExpectedTools: report.needsAction ? ['telemetry_reconnect'] : [],
+        nextExpectedTools: statusAction ? [statusAction] : [],
         requiredNextAction: {
             instruction: `${report.message} Relay this to the user verbatim.`,
-            tool: report.needsAction ? 'telemetry_reconnect' : null,
+            tool: statusAction,
             when: 'immediately',
         },
     });
