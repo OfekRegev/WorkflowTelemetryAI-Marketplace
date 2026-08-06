@@ -6586,6 +6586,7 @@ async function enrol(config, base, record) {
     const release = (0, registration_1.acquireLock)(base, config.pluginId);
     if (!release)
         return { kind: 'defer', reason: 'registration_in_flight' };
+    let releasedForIo = false;
     try {
         // Re-read under the lock and fail closed. Falling back to the pre-lock
         // snapshot would let a record deleted or corrupted while we waited proceed
@@ -6614,6 +6615,12 @@ async function enrol(config, base, record) {
             owner: begun.owner,
             revision: begun.record.revision,
         };
+        // Release before the request. Holding this across a configurable timeout
+        // lets the lease expire, after which reclaimStaleLease may legitimately take
+        // over — and a completion written afterwards would own no current lock,
+        // racing the reclaimer. Each completion re-acquires instead.
+        release();
+        releasedForIo = true;
         let result;
         try {
             result = await (0, http_1.postJson)(`${config.apiBaseUrl}/register`, {
@@ -6626,13 +6633,13 @@ async function enrol(config, base, record) {
             if (isPreSendFailure(err)) {
                 // Nothing reached the server: the identity is still clean, so this is
                 // simply retryable.
-                (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                completeUnderFreshLock(base, config.pluginId, expect, r => ({
                     ...r,
                     state: 'never_registered',
                 }));
                 return { kind: 'defer', reason: 'offline' };
             }
-            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+            completeUnderFreshLock(base, config.pluginId, expect, r => ({
                 ...r,
                 state: 'replacement_required',
                 token: null,
@@ -6647,7 +6654,7 @@ async function enrol(config, base, record) {
             // ambiguous case: the server may well have committed a token.
             const token = parseIssuedToken(result.body);
             if (!token) {
-                (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+                completeUnderFreshLock(base, config.pluginId, expect, r => ({
                     ...r,
                     state: 'replacement_required',
                     token: null,
@@ -6655,7 +6662,7 @@ async function enrol(config, base, record) {
                 }));
                 return { kind: 'stop', reason: 'ambiguous_registration', action: 'reconnect' };
             }
-            const applied = (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+            const applied = completeUnderFreshLock(base, config.pluginId, expect, r => ({
                 ...r,
                 state: 'registered',
                 token,
@@ -6673,7 +6680,7 @@ async function enrol(config, base, record) {
             // Either the plugin id disagreed with the key, or this install id already
             // has a token server-side. Both are terminal for this identity.
             const mismatch = safeReason(result.body) === 'plugin_id_mismatch';
-            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+            completeUnderFreshLock(base, config.pluginId, expect, r => ({
                 ...r,
                 state: mismatch ? 'configuration_blocked' : 'replacement_required',
                 token: null,
@@ -6693,7 +6700,7 @@ async function enrol(config, base, record) {
         if (result.status === 401) {
             // The enrolment key shipped in this package was revoked: a package update
             // is required, and no other identity will help.
-            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+            completeUnderFreshLock(base, config.pluginId, expect, r => ({
                 ...r,
                 state: 'configuration_blocked',
                 blockedFrom: 'never_registered',
@@ -6703,7 +6710,7 @@ async function enrol(config, base, record) {
             return { kind: 'stop', reason: 'enrolment_key_revoked', action: 'update_package' };
         }
         // 5xx and anything else: the server may or may not have committed.
-        (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({
+        completeUnderFreshLock(base, config.pluginId, expect, r => ({
             ...r,
             state: 'replacement_required',
             token: null,
@@ -6712,7 +6719,27 @@ async function enrol(config, base, record) {
         return { kind: 'stop', reason: 'ambiguous_registration', action: 'reconnect' };
     }
     finally {
-        release();
+        if (!releasedForIo)
+            release();
+    }
+}
+/**
+ * Apply an enrolment outcome under a freshly acquired lock.
+ *
+ * The original lock was released for the network call, so ownership has to be
+ * re-established before writing. completeAttempt still CAS's on owner and
+ * revision; this makes that check-and-write atomic with respect to whichever
+ * process owns the state now.
+ */
+function completeUnderFreshLock(base, pluginId, expect, mutate) {
+    const lock = (0, registration_1.acquireLock)(base, pluginId, { waitMs: 5000 });
+    if (!lock)
+        return null;
+    try {
+        return (0, registration_1.completeAttempt)(base, pluginId, expect, mutate);
+    }
+    finally {
+        lock();
     }
 }
 /**
@@ -6796,6 +6823,11 @@ async function processPendingDisconnect(config) {
             // future credential, so leaving them on disk is only clutter that a later
             // reconnect would have to reason about.
             if (fresh.record.currentInstallId) {
+                (0, queue_maintenance_1.recordPendingCleanup)({
+                    apiBaseHash: base,
+                    pluginId: config.pluginId,
+                    installId: fresh.record.currentInstallId,
+                });
                 (0, queue_maintenance_1.purgeInstallQueues)(base, config.pluginId, fresh.record.currentInstallId);
             }
             return true;
@@ -6862,6 +6894,48 @@ sentWith) {
     }
     finally {
         release();
+    }
+}
+
+
+/***/ },
+
+/***/ 7116
+(__unused_webpack_module, exports, __webpack_require__) {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.retryPendingDisconnect = retryPendingDisconnect;
+const telemetry_config_1 = __webpack_require__(5740);
+const registration_1 = __webpack_require__(5644);
+const delivery_auth_1 = __webpack_require__(1836);
+const queue_maintenance_1 = __webpack_require__(348);
+/**
+ * Complete a disconnect the server has not acknowledged yet.
+ *
+ * Called from every collector entry point rather than only SessionStart. The
+ * process that requested the disconnect may never run again — the user
+ * disconnects and closes the session — and until the DELETE lands the
+ * installation is still active server-side while the user believes otherwise.
+ *
+ * Cheap when there is nothing to do: one file read, no lock, no network.
+ * Never throws; a hook must not fail because of telemetry housekeeping.
+ */
+async function retryPendingDisconnect(pluginRoot) {
+    try {
+        // Retry any queue removal that previously failed. Cheap when there is
+        // nothing pending: one file read.
+        (0, queue_maintenance_1.drainPendingCleanups)();
+        const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
+        if (!config)
+            return;
+        const { record } = (0, registration_1.readRecord)((0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl), config.pluginId);
+        if (record?.state !== 'disconnect_pending')
+            return;
+        await (0, delivery_auth_1.processPendingDisconnect)(config);
+    }
+    catch {
+        // Housekeeping only.
     }
 }
 
@@ -6976,6 +7050,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.purgeInstallQueues = purgeInstallQueues;
 exports.purgeProjectQueues = purgeProjectQueues;
+exports.recordPendingCleanup = recordPendingCleanup;
+exports.drainPendingCleanups = drainPendingCleanups;
 const fs_1 = __importDefault(__webpack_require__(9896));
 const path_1 = __importDefault(__webpack_require__(6928));
 const config_1 = __webpack_require__(2478);
@@ -7059,6 +7135,71 @@ function purgeProjectQueues(identity, projectDir) {
         }
     }
     return removed;
+}
+/**
+ * Cleanup that must survive a failed attempt.
+ *
+ * Every caller purges once, best-effort, immediately after transitioning away
+ * from an identity. If that removal fails — a file held open, a transient
+ * permission error — nothing retried it, and the queued telemetry of a
+ * withdrawn or disconnected installation stayed on disk indefinitely. The
+ * tokenless disconnect branch did not purge at all.
+ *
+ * So pending work is recorded durably and drained on every collector entry
+ * point. Entries are removed only once the directory is actually gone.
+ */
+function pendingPath() {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'pending-cleanup.json');
+}
+function readPending() {
+    try {
+        const parsed = JSON.parse(fs_1.default.readFileSync(pendingPath(), 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    }
+    catch {
+        return [];
+    }
+}
+function writePending(entries) {
+    try {
+        fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
+        const target = pendingPath();
+        const temporary = `${target}.${process.pid}.tmp`;
+        fs_1.default.writeFileSync(temporary, JSON.stringify(entries, null, 2));
+        fs_1.default.renameSync(temporary, target);
+    }
+    catch {
+        // Best effort: losing the note only costs a retry opportunity.
+    }
+}
+/** Record an identity whose queues must eventually disappear. */
+function recordPendingCleanup(entry) {
+    const pending = readPending();
+    if (pending.some(p => p.apiBaseHash === entry.apiBaseHash &&
+        p.pluginId === entry.pluginId &&
+        p.installId === entry.installId))
+        return;
+    writePending([...pending, entry]);
+}
+/**
+ * Purge, and keep the note until it truly succeeded. Called from every collector
+ * entry point, so a failure is retried rather than forgotten.
+ */
+function drainPendingCleanups() {
+    const pending = readPending();
+    if (pending.length === 0)
+        return;
+    const remaining = pending.filter(entry => {
+        purgeInstallQueues(entry.apiBaseHash, entry.pluginId, entry.installId);
+        // Keep the entry while any queue for this identity still exists.
+        return sessionIds().some(sessionId => fs_1.default.existsSync((0, paths_1.installQueueDir)(sessionId, {
+            apiBaseHash: entry.apiBaseHash,
+            pluginId: entry.pluginId,
+            installId: entry.installId,
+        })));
+    });
+    if (remaining.length !== pending.length)
+        writePending(remaining);
 }
 
 
@@ -7484,8 +7625,11 @@ function reconnect(pluginRoot, consentCtx = {}) {
         (0, registration_1.beginReplacement)(base, config.pluginId, current, crypto_1.default.randomUUID());
         // Post-commit cleanup. The record swap above is the linearization point —
         // scanners resolve queues exactly, so the old ones are already unreachable.
-        if (previous)
+        // Recorded durably first: a failed removal must be retried, not forgotten.
+        if (previous) {
+            (0, queue_maintenance_1.recordPendingCleanup)({ apiBaseHash: base, pluginId: config.pluginId, installId: previous });
             (0, queue_maintenance_1.purgeInstallQueues)(base, config.pluginId, previous);
+        }
         return {
             ok: true,
             code: 'RECONNECTED',
@@ -7517,6 +7661,14 @@ function disconnect(pluginRoot) {
         }
         if (record.state === 'disconnected' || record.state === 'disconnect_pending') {
             return { ok: true, code: 'ALREADY_DISCONNECTED', message: 'This installation is already disconnected.' };
+        }
+        if (record.currentInstallId) {
+            // Applies to the tokenless branch too, which never purged at all.
+            (0, queue_maintenance_1.recordPendingCleanup)({
+                apiBaseHash: base,
+                pluginId: ctx.config.pluginId,
+                installId: record.currentInstallId,
+            });
         }
         (0, registration_1.beginDisconnect)(base, ctx.config.pluginId, record);
         return {
@@ -7597,8 +7749,22 @@ function status(pluginRoot, consentCtx = {}) {
     }
     const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
     const base = config ? (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl) : null;
-    const record = base && config ? (0, registration_1.readRecord)(base, config.pluginId).record : null;
+    let record = base && config ? (0, registration_1.readRecord)(base, config.pluginId).record : null;
     const consent = (0, consent_1.getConsent)(consentCtx);
+    // A missing record for a plugin that WAS initialised is not 'uninitialised':
+    // a token may still be active server-side. Reporting it as harmless left the
+    // user with no action, and only a later boundary would surface the truth.
+    if (!record && base && config && (0, registration_1.wasInitialised)(base, config.pluginId)) {
+        const lock = (0, registration_1.acquireLock)(base, config.pluginId, { waitMs: 2000 });
+        if (lock) {
+            try {
+                record = (0, registration_1.ensureInitialised)(base, config.pluginId, crypto_1.default.randomUUID());
+            }
+            finally {
+                lock();
+            }
+        }
+    }
     return {
         configured: true,
         state: record?.state ?? null,
@@ -8004,34 +8170,93 @@ const fs_1 = __importDefault(__webpack_require__(9896));
 const path_1 = __importDefault(__webpack_require__(6928));
 const crypto_1 = __importDefault(__webpack_require__(6982));
 /**
- * A cross-process advisory lock backed by exclusive file creation.
+ * A cross-process advisory lock backed by exclusive file creation, where
+ * **claiming the existing lock file is the atomic operation**.
  *
- * The lock carries an **owner token**, and both release and stale takeover are
- * validated against it. Extracted so consent and registration share one
- * implementation — they guard different state but must interleave correctly,
- * and two subtly different lock implementations is how that stops being true.
+ * The obvious implementation — read the owner, compare, then unlink — is not
+ * atomic, and the gap is exploitable in both directions:
+ *
+ *  - *release*: A reads its own token, a takeover replaces the file with B's
+ *    lock, A's unlink then deletes B's lock and C acquires alongside B.
+ *  - *takeover*: two contenders both observe stale owner A; B removes it and
+ *    acquires, C's already-decided unlink then removes B's fresh lock.
+ *
+ * Wrapping either in another lock only moves the gap. So both paths go through
+ * `claim()`, which uses `rename` — atomic, and crucially *exclusive*: when two
+ * processes rename the same path away, exactly one succeeds and the other gets
+ * ENOENT. The winner then inspects what it moved and either keeps it (the
+ * expected owner) or puts it back (someone else's live lock), so validation and
+ * removal are indivisible.
  */
 exports.DEFAULT_LEASE_MS = 2 * 60 * 1000;
-/** How long a takeover attempt itself may be held before it is assumed dead. */
-const TAKEOVER_LEASE_MS = 10000;
+/**
+ * Atomically take possession of the lock file, whatever it currently contains.
+ *
+ * Returns null when there is nothing there, or when another process claimed it
+ * first. The caller decides what to do with what it got, then must either
+ * `discard` or `restore` it.
+ */
+function claim(lockPath) {
+    const heldAt = `${lockPath}.claim.${process.pid}.${crypto_1.default.randomUUID().slice(0, 8)}`;
+    let stat;
+    try {
+        stat = fs_1.default.statSync(lockPath);
+    }
+    catch {
+        return null; // nothing to claim
+    }
+    try {
+        fs_1.default.renameSync(lockPath, heldAt);
+    }
+    catch {
+        return null; // someone else claimed it in the same instant
+    }
+    let owner = '';
+    try {
+        owner = fs_1.default.readFileSync(heldAt, 'utf8');
+    }
+    catch { /* empty */ }
+    return { heldAt, owner, ageMs: Date.now() - stat.mtimeMs };
+}
+function discard(c) {
+    try {
+        fs_1.default.unlinkSync(c.heldAt);
+    }
+    catch { /* already gone */ }
+}
+/** Put back a lock we claimed but must not remove. */
+function restore(c, lockPath) {
+    try {
+        fs_1.default.renameSync(c.heldAt, lockPath);
+    }
+    catch {
+        // Another lock already exists at the path, so ours is redundant; dropping
+        // it is correct — the live holder is the one at lockPath.
+        discard(c);
+    }
+}
 /** Acquire, or return null if it stays held for the whole wait window. */
 function acquireFileLock(lockPath, { leaseMs = exports.DEFAULT_LEASE_MS, waitMs = 0 } = {}) {
     fs_1.default.mkdirSync(path_1.default.dirname(lockPath), { recursive: true });
     const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
     const deadline = Date.now() + waitMs;
     for (;;) {
-        if (tryCreate(lockPath, owner)) {
-            return () => {
-                // Release only what we still own: after a takeover the file belongs to
-                // someone else, and deleting it would admit a third holder.
-                try {
-                    if (fs_1.default.readFileSync(lockPath, 'utf8') === owner)
-                        fs_1.default.unlinkSync(lockPath);
-                }
-                catch { /* already gone */ }
-            };
+        if (tryCreate(lockPath, owner))
+            return () => release(lockPath, owner);
+        // Occupied. Claim it atomically to decide whether it is abandoned; only the
+        // process that successfully claims may remove it, so a second contender
+        // cannot delete a lock that has meanwhile been re-acquired.
+        const held = claim(lockPath);
+        if (held) {
+            if (held.ageMs >= leaseMs) {
+                // Abandoned, and we hold it exclusively. Retry creation immediately
+                // rather than falling through to the deadline: a caller that is not
+                // willing to wait still deserves the lock it just freed.
+                discard(held);
+                continue;
+            }
+            restore(held, lockPath);
         }
-        reclaimIfStale(lockPath, leaseMs);
         if (Date.now() >= deadline)
             return null;
         sleepBriefly();
@@ -8049,55 +8274,20 @@ function tryCreate(lockPath, owner) {
     }
 }
 /**
- * Remove an abandoned lock — but only the exact one observed as abandoned.
+ * Release only what we still own.
  *
- * Unlinking by path alone is not safe: two contenders can both see owner A as
- * stale, B unlinks A and takes the lock, and C then performs its own
- * already-decided unlink, deleting B's fresh lock and acquiring alongside it.
- * Both enter the critical section, and the owner check on release does not help
- * because neither is releasing.
- *
- * So the removal itself is serialized by a second exclusive-create lock, and the
- * observed owner is re-validated inside it. C then sees B's token instead of A's
- * and leaves it alone.
+ * Claiming first makes the ownership test and the removal one step: if a
+ * takeover already replaced our lock, we hold *their* file and put it back
+ * untouched instead of deleting it.
  */
-function reclaimIfStale(lockPath, leaseMs) {
-    let observed;
-    try {
-        const stat = fs_1.default.statSync(lockPath);
-        observed = { owner: fs_1.default.readFileSync(lockPath, 'utf8'), ageMs: Date.now() - stat.mtimeMs };
-    }
-    catch {
-        return; // vanished; the next create attempt will decide
-    }
-    if (observed.ageMs <= leaseMs)
-        return;
-    const takeoverPath = `${lockPath}.takeover`;
-    const takeoverOwner = `${process.pid}:${crypto_1.default.randomUUID()}`;
-    try {
-        const age = Date.now() - fs_1.default.statSync(takeoverPath).mtimeMs;
-        if (age > TAKEOVER_LEASE_MS)
-            fs_1.default.unlinkSync(takeoverPath);
-    }
-    catch { /* no takeover in progress */ }
-    if (!tryCreate(takeoverPath, takeoverOwner))
-        return; // another process is deciding
-    try {
-        // Re-read under the takeover lock. If the token changed, someone already
-        // replaced it and this decision is stale.
-        const current = fs_1.default.readFileSync(lockPath, 'utf8');
-        const stillStale = Date.now() - fs_1.default.statSync(lockPath).mtimeMs > leaseMs;
-        if (current === observed.owner && stillStale)
-            fs_1.default.unlinkSync(lockPath);
-    }
-    catch { /* gone already */ }
-    finally {
-        try {
-            if (fs_1.default.readFileSync(takeoverPath, 'utf8') === takeoverOwner)
-                fs_1.default.unlinkSync(takeoverPath);
-        }
-        catch { /* already gone */ }
-    }
+function release(lockPath, owner) {
+    const held = claim(lockPath);
+    if (!held)
+        return; // already gone
+    if (held.owner === owner)
+        discard(held);
+    else
+        restore(held, lockPath);
 }
 /**
  * Block for a few milliseconds without a timer.
@@ -36523,6 +36713,7 @@ const consent_1 = __webpack_require__(3943);
 const recovery_1 = __webpack_require__(5106);
 const plugin_context_1 = __webpack_require__(5984);
 const registration_1 = __webpack_require__(5644);
+const disconnect_retry_1 = __webpack_require__(7116);
 const delivery_auth_1 = __webpack_require__(1836);
 const telemetry_config_1 = __webpack_require__(5740);
 const record_event_1 = __webpack_require__(9741);
@@ -36600,6 +36791,10 @@ function consentContext(sessionId) {
  */
 function terminalBlocked(runId = '') {
     const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
+    // MCP is an entry point like any other, so durable housekeeping runs here too:
+    // a user who only ever interacts through the agent must still see a pending
+    // disconnect complete and failed queue removals retried.
+    void (0, disconnect_retry_1.retryPendingDisconnect)(pluginRoot);
     let config;
     try {
         config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot);
@@ -36754,15 +36949,22 @@ server.registerTool('telemetry_set_consent', {
     // strictly harder.
     if (decision === 'withdraw') {
         const result = (0, recovery_1.withdraw)(pluginRoot, consentCtx);
+        // The outcome must be reported honestly. Hard-coding success here told the
+        // model "accepted, continue without telemetry" even when the durable write
+        // failed and consent was still `allow` — so collection silently resumed
+        // after the user was told it had stopped.
         return toolResult({
-            accepted: true,
-            state: 'action_taken',
+            accepted: result.ok,
+            state: result.ok ? 'action_taken' : 'action_required',
             code: result.code,
             runId: '',
-            nextExpectedTools: [],
+            nextExpectedTools: result.ok ? [] : ['telemetry_set_consent'],
             requiredNextAction: {
-                instruction: result.message + ' Continue the user\'s work without telemetry.',
-                tool: null,
+                instruction: result.ok
+                    ? `${result.message} Continue the user's work without telemetry.`
+                    : `${result.message} Tell the user telemetry is STILL ACTIVE and the withdrawal ` +
+                        `did not take effect, then retry telemetry_set_consent with decision "withdraw".`,
+                tool: result.ok ? null : 'telemetry_set_consent',
                 when: 'immediately',
             },
         });
