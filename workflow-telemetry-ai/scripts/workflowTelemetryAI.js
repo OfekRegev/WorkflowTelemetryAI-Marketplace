@@ -175,13 +175,15 @@ function mcpServerKey(pluginRoot) {
         if (!servers)
             return null;
         const entries = Object.entries(servers);
+        // Identified ONLY by the bundle it launches. A sole-entry fallback fails
+        // open: a package whose single MCP server is someone else's would have that
+        // server declared to be telemetry, and a foreign tool named `telemetry_*`
+        // would then be auto-approved by our consent state.
         const ours = entries.filter(([, def]) => {
             const argv = [def?.command, ...(Array.isArray(def?.args) ? def.args : [])];
             return argv.some(a => typeof a === 'string' && a.includes(MCP_BUNDLE));
         });
-        if (ours.length === 1)
-            return ours[0][0];
-        return entries.length === 1 ? entries[0][0] : null;
+        return ours.length === 1 ? ours[0][0] : null;
     }
     catch {
         return null;
@@ -378,7 +380,6 @@ const path_1 = __importDefault(__webpack_require__(928));
 const stdin_1 = __webpack_require__(308);
 const paths_1 = __webpack_require__(830);
 const plugin_context_1 = __webpack_require__(984);
-const disconnect_retry_1 = __webpack_require__(116);
 const plugin_identity_1 = __webpack_require__(834);
 async function handleScanAndSend() {
     try {
@@ -393,11 +394,6 @@ async function handleScanAndSend() {
         // telemetry plugins active in one session each Stop hook picked up the
         // other's runs and uploaded them under its own credential — telemetry
         // crossing a customer boundary.
-        // A disconnect the server has not acknowledged is retried from every
-        // collector entry point, not only SessionStart: a user who disconnects and
-        // never opens a new session would otherwise stay registered indefinitely,
-        // believing they had disconnected.
-        await (0, disconnect_retry_1.retryPendingDisconnect)(pluginRoot);
         const context = (0, plugin_context_1.resolvePluginContext)(pluginRoot);
         if (!context.ok)
             return;
@@ -464,7 +460,6 @@ const path_1 = __importDefault(__webpack_require__(928));
 const stdin_1 = __webpack_require__(308);
 const paths_1 = __webpack_require__(830);
 const plugin_context_1 = __webpack_require__(984);
-const disconnect_retry_1 = __webpack_require__(116);
 const plugin_identity_1 = __webpack_require__(834);
 const sender_1 = __webpack_require__(885);
 async function handleSessionEnd() {
@@ -477,7 +472,6 @@ async function handleSessionEnd() {
     // nobody else's. Scoping also retires the old `!== 'session-context.json'`
     // filter — session-level files now sit above the queue, not beside the runs.
     const pluginRoot = (0, plugin_identity_1.resolvePluginRoot)();
-    await (0, disconnect_retry_1.retryPendingDisconnect)(pluginRoot);
     const context = (0, plugin_context_1.resolvePluginContext)(pluginRoot);
     if (!context.ok)
         return;
@@ -608,6 +602,26 @@ const plugin_identity_1 = __webpack_require__(834);
 const [, , mode, subcommand, ...args] = process.argv;
 const RECOVERY = new Set(['status', 'reconnect', 'disconnect', 'withdraw']);
 /**
+ * Where the plugin root actually is for THIS invocation.
+ *
+ * `args[0]` is not generically the root: for send-run it is the run id, for a
+ * recovery command it is `subcommand`, and for legacy events it is event data.
+ * Loading config from a bogus path silently skipped the housekeeping this is
+ * supposed to guarantee.
+ */
+function pluginRootForMode() {
+    if (mode === 'hook') {
+        // Hooks that receive the root pass it first; the rest fall back to argv[1].
+        const withRoot = new Set(['session-start', 'read-protocol', 'check-mcp-permission', 'capture-consent-response']);
+        return (0, plugin_identity_1.resolvePluginRoot)(withRoot.has(subcommand) ? args[0] : undefined);
+    }
+    if (mode === 'send-run')
+        return (0, plugin_identity_1.resolvePluginRoot)(args[1]);
+    if (RECOVERY.has(mode))
+        return (0, plugin_identity_1.resolvePluginRoot)(subcommand);
+    return (0, plugin_identity_1.resolvePluginRoot)();
+}
+/**
  * Recovery from the command line. Consent context is the current working
  * directory, which is the project the user is standing in — the same scope the
  * MCP surface derives from the session.
@@ -641,7 +655,7 @@ async function main() {
         // is: a disconnect the server has not acknowledged, and any queue removal
         // that previously failed. The process that requested them may never run
         // again, so tying the retry to one hook leaves the work undone.
-        await (0, disconnect_retry_1.retryPendingDisconnect)((0, plugin_identity_1.resolvePluginRoot)(args[0]));
+        await (0, disconnect_retry_1.retryPendingDisconnect)(pluginRootForMode());
         if (mode === 'hook') {
             if (subcommand === 'session-start')
                 await (0, session_start_1.handleSessionStart)(args[0]);
@@ -1072,11 +1086,7 @@ function reconcileConfigurationBlock(config) {
         release();
     }
 }
-/**
- * Resolve a credential for delivery, registering if this identity has never
- * been registered. Returns the token, or why delivery cannot proceed.
- */
-async function resolveDeliveryAuth(config) {
+async function resolveDeliveryAuth(config, gate) {
     const base = (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl);
     const { record, corrupt } = (0, registration_1.readRecord)(base, config.pluginId);
     // A record that exists but cannot be read must fail closed. It is NOT the
@@ -1089,9 +1099,9 @@ async function resolveDeliveryAuth(config) {
         // uninitialised rather than enrolling blind.
         return { kind: 'defer', reason: 'not_initialised' };
     }
-    return resolveFrom(config, base, record);
+    return resolveFrom(config, base, record, gate);
 }
-async function resolveFrom(config, base, record) {
+async function resolveFrom(config, base, record, gate) {
     switch (record.state) {
         case 'registered':
             return record.token
@@ -1110,7 +1120,7 @@ async function resolveFrom(config, base, record) {
         case 'configuration_blocked': {
             const restored = reconcileConfigurationBlock(config);
             if (restored)
-                return resolveFrom(config, base, restored);
+                return resolveFrom(config, base, restored, gate);
             return { kind: 'stop', reason: record.terminalError?.reason ?? 'configuration_blocked', action: 'update_package' };
         }
         case 'registering': {
@@ -1126,10 +1136,10 @@ async function resolveFrom(config, base, record) {
                 : { kind: 'defer', reason: 'reclaim_raced' };
         }
         case 'never_registered':
-            return enrol(config, base, record);
+            return enrol(config, base, record, gate);
     }
 }
-async function enrol(config, base, record) {
+async function enrol(config, base, record, gate) {
     const installId = record.currentInstallId ?? crypto_1.default.randomUUID();
     // One enrolment at a time per (apiBase, plugin) across ALL sessions.
     const release = (0, registration_1.acquireLock)(base, config.pluginId);
@@ -1170,13 +1180,27 @@ async function enrol(config, base, record) {
         // racing the reclaimer. Each completion re-acquires instead.
         release();
         releasedForIo = true;
-        let result;
+        // Open the caller's boundary and start the request inside it, so nothing
+        // can commit between the final consent check and `/register` beginning.
+        if (gate && !gate.open()) {
+            (0, registration_1.completeAttempt)(base, config.pluginId, expect, r => ({ ...r, state: 'never_registered' }));
+            return { kind: 'defer', reason: 'consent_gate_contended' };
+        }
+        let pending;
         try {
-            result = await (0, http_1.postJson)(`${config.apiBaseUrl}/register`, {
+            pending = (0, http_1.postJson)(`${config.apiBaseUrl}/register`, {
                 installId,
                 expectedPluginId: config.pluginId,
                 replacesInstallId: fresh.replacesInstallId ?? undefined,
             }, { Authorization: `Bearer ${config.pluginKey}` });
+        }
+        finally {
+            // Released the instant the request exists — never held across the await.
+            gate?.close();
+        }
+        let result;
+        try {
+            result = await pending;
         }
         catch (err) {
             if (isPreSendFailure(err)) {
@@ -1373,6 +1397,7 @@ async function processPendingDisconnect(config) {
             // reconnect would have to reason about.
             if (fresh.record.currentInstallId) {
                 (0, queue_maintenance_1.recordPendingCleanup)({
+                    kind: 'install',
                     apiBaseHash: base,
                     pluginId: config.pluginId,
                     installId: fresh.record.currentInstallId,
@@ -1603,6 +1628,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.purgeInstallQueues = purgeInstallQueues;
 exports.purgeProjectQueues = purgeProjectQueues;
 exports.recordPendingCleanup = recordPendingCleanup;
+exports.cleanupPendingForProject = cleanupPendingForProject;
 exports.drainPendingCleanups = drainPendingCleanups;
 const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
@@ -1613,13 +1639,18 @@ const paths_2 = __webpack_require__(830);
 /**
  * Cleanup of run queues that must no longer be delivered.
  *
- * Both callers rely on the same property: scanners resolve their queue path
+ * Both purges rely on the same property: scanners resolve their queue path
  * **exactly**, from `(apiBaseHash, pluginId, installId)`. A queue that no
  * longer matches the current identity is therefore already unreachable the
  * instant `registration.json` is replaced — that atomic write is the
  * linearization point. Removing the directory afterwards is resumable,
- * idempotent cleanup, not part of the transition, which is why a crash
- * half-way through leaves nothing deliverable behind.
+ * idempotent cleanup, not part of the transition.
+ *
+ * Project withdrawal is different: the identity does *not* change, so the queue
+ * stays perfectly reachable and the purge is the only thing stopping delivery.
+ * A failed purge there is a correctness problem, not untidiness — which is why
+ * outstanding work is recorded durably and delivery for that project is blocked
+ * until it completes.
  */
 function sessionsRoot() {
     return path_1.default.join((0, config_1.getBaseDir)(), 'claude-sessions');
@@ -1688,70 +1719,115 @@ function purgeProjectQueues(identity, projectDir) {
     }
     return removed;
 }
-/**
- * Cleanup that must survive a failed attempt.
- *
- * Every caller purges once, best-effort, immediately after transitioning away
- * from an identity. If that removal fails — a file held open, a transient
- * permission error — nothing retried it, and the queued telemetry of a
- * withdrawn or disconnected installation stayed on disk indefinitely. The
- * tokenless disconnect branch did not purge at all.
- *
- * So pending work is recorded durably and drained on every collector entry
- * point. Entries are removed only once the directory is actually gone.
- */
-function pendingPath() {
-    return path_1.default.join((0, config_1.getBaseDir)(), 'pending-cleanup.json');
+function pendingDir() {
+    return path_1.default.join((0, config_1.getBaseDir)(), 'pending-cleanup');
 }
-function readPending() {
+function jobId(job) {
+    const parts = job.kind === 'project'
+        ? [job.kind, job.apiBaseHash, job.pluginId, job.installId, (0, paths_2.projectHash)(job.projectDir)]
+        : [job.kind, job.apiBaseHash, job.pluginId, job.installId];
+    return parts.join('_');
+}
+/**
+ * Record cleanup that must eventually happen.
+ *
+ * Returns false when the note could not be persisted. Callers must not report
+ * the cleanup as assured in that case — for withdrawal that means reporting
+ * failure, because a lost note plus a failed purge means pre-withdrawal
+ * telemetry could still be uploaded later.
+ */
+function recordPendingCleanup(job) {
     try {
-        const parsed = JSON.parse(fs_1.default.readFileSync(pendingPath(), 'utf8'));
-        return Array.isArray(parsed) ? parsed : [];
+        fs_1.default.mkdirSync(pendingDir(), { recursive: true });
+        const target = path_1.default.join(pendingDir(), `${jobId(job)}.json`);
+        const temporary = `${target}.${process.pid}.tmp`;
+        fs_1.default.writeFileSync(temporary, JSON.stringify(job));
+        fs_1.default.renameSync(temporary, target);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function readJobs() {
+    try {
+        return fs_1.default.readdirSync(pendingDir())
+            .filter(f => f.endsWith('.json'))
+            .flatMap(name => {
+            const file = path_1.default.join(pendingDir(), name);
+            try {
+                return [{ file, job: JSON.parse(fs_1.default.readFileSync(file, 'utf8')) }];
+            }
+            catch {
+                return [];
+            }
+        });
     }
     catch {
         return [];
     }
 }
-function writePending(entries) {
-    try {
-        fs_1.default.mkdirSync((0, config_1.getBaseDir)(), { recursive: true });
-        const target = pendingPath();
-        const temporary = `${target}.${process.pid}.tmp`;
-        fs_1.default.writeFileSync(temporary, JSON.stringify(entries, null, 2));
-        fs_1.default.renameSync(temporary, target);
-    }
-    catch {
-        // Best effort: losing the note only costs a retry opportunity.
-    }
-}
-/** Record an identity whose queues must eventually disappear. */
-function recordPendingCleanup(entry) {
-    const pending = readPending();
-    if (pending.some(p => p.apiBaseHash === entry.apiBaseHash &&
-        p.pluginId === entry.pluginId &&
-        p.installId === entry.installId))
-        return;
-    writePending([...pending, entry]);
+/**
+ * True while a project still has telemetry awaiting a purge.
+ *
+ * Delivery consults this and refuses: until the withdrawal's purge has actually
+ * completed, the surviving queue is pre-withdrawal telemetry, and re-granting
+ * consent later must not make it uploadable.
+ */
+function cleanupPendingForProject(identity, projectDir) {
+    const target = (0, paths_2.projectHash)(projectDir);
+    return readJobs().some(({ job }) => job.kind === 'project' &&
+        job.apiBaseHash === identity.apiBaseHash &&
+        job.pluginId === identity.pluginId &&
+        (0, paths_2.projectHash)(job.projectDir) === target);
 }
 /**
- * Purge, and keep the note until it truly succeeded. Called from every collector
- * entry point, so a failure is retried rather than forgotten.
+ * Run every outstanding job, deleting the note only once the work is verifiably
+ * done. Called from every collector entry point, so a failure is retried rather
+ * than forgotten.
  */
 function drainPendingCleanups() {
-    const pending = readPending();
-    if (pending.length === 0)
-        return;
-    const remaining = pending.filter(entry => {
-        purgeInstallQueues(entry.apiBaseHash, entry.pluginId, entry.installId);
-        // Keep the entry while any queue for this identity still exists.
-        return sessionIds().some(sessionId => fs_1.default.existsSync((0, paths_1.installQueueDir)(sessionId, {
-            apiBaseHash: entry.apiBaseHash,
-            pluginId: entry.pluginId,
-            installId: entry.installId,
-        })));
+    for (const { file, job } of readJobs()) {
+        const identity = {
+            apiBaseHash: job.apiBaseHash,
+            pluginId: job.pluginId,
+            installId: job.installId,
+        };
+        if (job.kind === 'project') {
+            purgeProjectQueues(identity, job.projectDir);
+            if (!projectQueuesRemain(identity, job.projectDir))
+                remove(file);
+        }
+        else {
+            purgeInstallQueues(job.apiBaseHash, job.pluginId, job.installId);
+            if (!installQueuesRemain(identity))
+                remove(file);
+        }
+    }
+}
+function remove(file) {
+    try {
+        fs_1.default.unlinkSync(file);
+    }
+    catch { /* already gone */ }
+}
+function installQueuesRemain(identity) {
+    return sessionIds().some(sessionId => fs_1.default.existsSync((0, paths_1.installQueueDir)(sessionId, identity)));
+}
+function projectQueuesRemain(identity, projectDir) {
+    const target = (0, paths_2.projectHash)(projectDir);
+    return sessionIds().some(sessionId => {
+        let sessionProject;
+        try {
+            sessionProject = (0, session_1.readSessionContext)(sessionId).projectDir;
+        }
+        catch {
+            return false;
+        }
+        if (!sessionProject || (0, paths_2.projectHash)(sessionProject) !== target)
+            return false;
+        return fs_1.default.existsSync((0, paths_1.installQueueDir)(sessionId, identity));
     });
-    if (remaining.length !== pending.length)
-        writePending(remaining);
 }
 
 
@@ -2095,6 +2171,7 @@ const registration_1 = __webpack_require__(644);
 const queue_maintenance_1 = __webpack_require__(348);
 const consent_1 = __webpack_require__(943);
 const telemetry_config_1 = __webpack_require__(740);
+const delivery_auth_1 = __webpack_require__(836);
 const plugin_identity_1 = __webpack_require__(834);
 /** States from which nothing will ever be delivered again without user action. */
 const TERMINAL = new Set([
@@ -2181,7 +2258,7 @@ function reconnect(pluginRoot, consentCtx = {}) {
         // scanners resolve queues exactly, so the old ones are already unreachable.
         // Recorded durably first: a failed removal must be retried, not forgotten.
         if (previous) {
-            (0, queue_maintenance_1.recordPendingCleanup)({ apiBaseHash: base, pluginId: config.pluginId, installId: previous });
+            (0, queue_maintenance_1.recordPendingCleanup)({ kind: 'install', apiBaseHash: base, pluginId: config.pluginId, installId: previous });
             (0, queue_maintenance_1.purgeInstallQueues)(base, config.pluginId, previous);
         }
         return {
@@ -2216,9 +2293,21 @@ function disconnect(pluginRoot) {
         if (record.state === 'disconnected' || record.state === 'disconnect_pending') {
             return { ok: true, code: 'ALREADY_DISCONNECTED', message: 'This installation is already disconnected.' };
         }
+        if (record.state === 'registering') {
+            // The record carries no token yet, so a disconnect here would take the
+            // tokenless branch and report success — while the in-flight POST may
+            // still commit a credential the reported disconnect can never delete.
+            return {
+                ok: false,
+                code: 'REGISTRATION_IN_FLIGHT',
+                message: 'This installation is still registering. Try disconnecting again in a moment, ' +
+                    'once registration has finished.',
+            };
+        }
         if (record.currentInstallId) {
             // Applies to the tokenless branch too, which never purged at all.
             (0, queue_maintenance_1.recordPendingCleanup)({
+                kind: 'install',
                 apiBaseHash: base,
                 pluginId: ctx.config.pluginId,
                 installId: record.currentInstallId,
@@ -2255,7 +2344,28 @@ function withdraw(pluginRoot, consentCtx = {}) {
     const ctx = context(pluginRoot);
     let purged = 0;
     if (ctx.ok && consentCtx.projectDir) {
+        // Record the purge as durable work FIRST. Unlike a replacement, withdrawal
+        // does not change the identity, so the queue stays perfectly reachable and
+        // the purge is the only thing preventing delivery. If the note cannot be
+        // written and the purge then fails, that telemetry could be uploaded later
+        // — so an unrecordable job is reported as a failure, not glossed over.
+        const noted = (0, queue_maintenance_1.recordPendingCleanup)({
+            kind: 'project',
+            apiBaseHash: ctx.identity.apiBaseHash,
+            pluginId: ctx.identity.pluginId,
+            installId: ctx.identity.installId,
+            projectDir: consentCtx.projectDir,
+        });
         purged = (0, queue_maintenance_1.purgeProjectQueues)(ctx.identity, consentCtx.projectDir);
+        if (!noted && (0, queue_maintenance_1.cleanupPendingForProject)(ctx.identity, consentCtx.projectDir)) {
+            return {
+                ok: false,
+                code: 'WITHDRAW_INCOMPLETE',
+                message: 'Consent was withdrawn, but this project\'s queued telemetry could not be removed ' +
+                    'and the retry could not be recorded. Remove the collector state directory manually ' +
+                    'to be certain nothing is delivered.',
+            };
+        }
     }
     return {
         ok: true,
@@ -2274,6 +2384,13 @@ function withdraw(pluginRoot, consentCtx = {}) {
  * teaches the model to retry something guaranteed to fail.
  */
 function nextActionFor(record, opts = {}) {
+    // Reconnect resumes collection, so it is refused without consent. Offering it
+    // to a user who declined or withdrew sends them to a tool that will say no.
+    if (opts.consent !== undefined && opts.consent !== 'allow') {
+        return opts.consent === 'decline' || opts.consent === 'withdrawn'
+            ? 'telemetry_set_consent'
+            : null;
+    }
     // A corrupt record has no readable state, but reconnect can now normalise and
     // replace it — so it is genuinely actionable.
     if (opts.corrupt)
@@ -2303,6 +2420,11 @@ function status(pluginRoot, consentCtx = {}) {
     }
     const config = (0, telemetry_config_1.loadTelemetryConfig)(pluginRoot ?? (0, plugin_identity_1.resolvePluginRoot)());
     const base = config ? (0, telemetry_config_1.apiBaseHash)(config.apiBaseUrl) : null;
+    // Reconcile BEFORE reading: after the author ships the prescribed fix, status
+    // would otherwise keep telling the user to update an already-updated package
+    // until some other boundary happened to run.
+    if (config)
+        (0, delivery_auth_1.reconcileConfigurationBlock)(config);
     let record = base && config ? (0, registration_1.readRecord)(base, config.pluginId).record : null;
     const consent = (0, consent_1.getConsent)(consentCtx);
     // A missing record for a plugin that WAS initialised is not 'uninitialised':
@@ -2727,99 +2849,54 @@ const fs_1 = __importDefault(__webpack_require__(896));
 const path_1 = __importDefault(__webpack_require__(928));
 const crypto_1 = __importDefault(__webpack_require__(982));
 /**
- * A cross-process advisory lock backed by exclusive file creation, where
- * **claiming the existing lock file is the atomic operation**.
+ * A cross-process advisory lock.
  *
- * The obvious implementation — read the owner, compare, then unlink — is not
- * atomic, and the gap is exploitable in both directions:
+ * **The canonical lock file is never vacated.** An earlier version renamed it
+ * aside to inspect it atomically; that left the path briefly empty, so a
+ * contender could create it and enter while the holder was still inside its
+ * critical section — and the restore then silently overwrote the newcomer's
+ * lock. Acquisition is the only thing that creates the path, and it is
+ * `O_EXCL`, so at most one process can hold it.
  *
- *  - *release*: A reads its own token, a takeover replaces the file with B's
- *    lock, A's unlink then deletes B's lock and C acquires alongside B.
- *  - *takeover*: two contenders both observe stale owner A; B removes it and
- *    acquires, C's already-decided unlink then removes B's fresh lock.
- *
- * Wrapping either in another lock only moves the gap. So both paths go through
- * `claim()`, which uses `rename` — atomic, and crucially *exclusive*: when two
- * processes rename the same path away, exactly one succeeds and the other gets
- * ENOENT. The winner then inspects what it moved and either keeps it (the
- * expected owner) or puts it back (someone else's live lock), so validation and
- * removal are indivisible.
+ * That leaves exactly one dangerous operation: *removing* the file. Two callers
+ * want to — a holder releasing, and a contender reclaiming an abandoned lock —
+ * and both must validate before removing. Read-then-unlink is not atomic, so
+ * **both go through `withMutation`**, a second short-lived `O_EXCL` lock that
+ * serializes every removal and re-validates inside it. Nothing blocks while
+ * holding that mutex: it guards two file operations and no I/O, so its own
+ * abandonment window is bounded by process death alone.
  */
 exports.DEFAULT_LEASE_MS = 2 * 60 * 1000;
-/**
- * Atomically take possession of the lock file, whatever it currently contains.
- *
- * Returns null when there is nothing there, or when another process claimed it
- * first. The caller decides what to do with what it got, then must either
- * `discard` or `restore` it.
- */
-function claim(lockPath) {
-    const heldAt = `${lockPath}.claim.${process.pid}.${crypto_1.default.randomUUID().slice(0, 8)}`;
-    let stat;
-    try {
-        stat = fs_1.default.statSync(lockPath);
-    }
-    catch {
-        return null; // nothing to claim
-    }
-    try {
-        fs_1.default.renameSync(lockPath, heldAt);
-    }
-    catch {
-        return null; // someone else claimed it in the same instant
-    }
-    let owner = '';
-    try {
-        owner = fs_1.default.readFileSync(heldAt, 'utf8');
-    }
-    catch { /* empty */ }
-    return { heldAt, owner, ageMs: Date.now() - stat.mtimeMs };
-}
-function discard(c) {
-    try {
-        fs_1.default.unlinkSync(c.heldAt);
-    }
-    catch { /* already gone */ }
-}
-/** Put back a lock we claimed but must not remove. */
-function restore(c, lockPath) {
-    try {
-        fs_1.default.renameSync(c.heldAt, lockPath);
-    }
-    catch {
-        // Another lock already exists at the path, so ours is redundant; dropping
-        // it is correct — the live holder is the one at lockPath.
-        discard(c);
-    }
-}
+/** The mutation mutex guards two file ops; anything older than this is debris. */
+const MUTATION_LEASE_MS = 5000;
 /** Acquire, or return null if it stays held for the whole wait window. */
 function acquireFileLock(lockPath, { leaseMs = exports.DEFAULT_LEASE_MS, waitMs = 0 } = {}) {
     fs_1.default.mkdirSync(path_1.default.dirname(lockPath), { recursive: true });
     const owner = `${process.pid}:${crypto_1.default.randomUUID()}`;
     const deadline = Date.now() + waitMs;
     for (;;) {
-        if (tryCreate(lockPath, owner))
-            return () => release(lockPath, owner);
-        // Occupied. Claim it atomically to decide whether it is abandoned; only the
-        // process that successfully claims may remove it, so a second contender
-        // cannot delete a lock that has meanwhile been re-acquired.
-        const held = claim(lockPath);
-        if (held) {
-            if (held.ageMs >= leaseMs) {
-                // Abandoned, and we hold it exclusively. Retry creation immediately
-                // rather than falling through to the deadline: a caller that is not
-                // willing to wait still deserves the lock it just freed.
-                discard(held);
-                continue;
-            }
-            restore(held, lockPath);
-        }
+        if (create(lockPath, owner))
+            return () => releaseOwn(lockPath, owner);
+        // Occupied. Check cheaply BEFORE reaching for the mutation mutex: a live
+        // holder is the normal case, and having every waiter contend for the mutex
+        // on every attempt starves the holder's own release — which needs it — and
+        // stalls everyone.
+        if (looksAbandoned(lockPath, leaseMs) && reclaimIfAbandoned(lockPath, leaseMs))
+            continue;
         if (Date.now() >= deadline)
             return null;
         sleepBriefly();
     }
 }
-function tryCreate(lockPath, owner) {
+function looksAbandoned(lockPath, leaseMs) {
+    try {
+        return Date.now() - fs_1.default.statSync(lockPath).mtimeMs >= leaseMs;
+    }
+    catch {
+        return true; // vanished between attempts; treat as free and retry creation
+    }
+}
+function create(lockPath, owner) {
     try {
         const fd = fs_1.default.openSync(lockPath, 'wx');
         fs_1.default.writeSync(fd, owner);
@@ -2831,20 +2908,78 @@ function tryCreate(lockPath, owner) {
     }
 }
 /**
+ * Serialize a removal decision about the canonical lock.
+ *
+ * Both callers re-read the file *inside* this mutex, so neither can act on a
+ * value that changed after it looked. Returns false when the mutex itself is
+ * contended — the caller simply retries rather than proceeding unguarded.
+ */
+function withMutation(lockPath, fn) {
+    const mutexPath = `${lockPath}.mutation`;
+    const token = `${process.pid}:${crypto_1.default.randomUUID()}`;
+    // Clear only debris: nothing ever blocks while holding this.
+    try {
+        if (Date.now() - fs_1.default.statSync(mutexPath).mtimeMs > MUTATION_LEASE_MS)
+            fs_1.default.unlinkSync(mutexPath);
+    }
+    catch { /* not present */ }
+    if (!create(mutexPath, token))
+        return false;
+    try {
+        return fn();
+    }
+    finally {
+        try {
+            if (fs_1.default.readFileSync(mutexPath, 'utf8') === token)
+                fs_1.default.unlinkSync(mutexPath);
+        }
+        catch { /* already cleared as debris */ }
+    }
+}
+/** Remove the lock only if it is still the abandoned one we observed. */
+function reclaimIfAbandoned(lockPath, leaseMs) {
+    return withMutation(lockPath, () => {
+        let stat;
+        try {
+            stat = fs_1.default.statSync(lockPath);
+        }
+        catch {
+            return true; // vanished; retry acquisition
+        }
+        if (Date.now() - stat.mtimeMs < leaseMs)
+            return false; // a live holder
+        try {
+            fs_1.default.unlinkSync(lockPath);
+        }
+        catch { /* someone else got there */ }
+        return true;
+    });
+}
+/**
  * Release only what we still own.
  *
- * Claiming first makes the ownership test and the removal one step: if a
- * takeover already replaced our lock, we hold *their* file and put it back
- * untouched instead of deleting it.
+ * If the lease expired and someone reclaimed it, the file now belongs to
+ * another holder and must be left alone — deleting it would admit a second
+ * owner alongside them.
  */
-function release(lockPath, owner) {
-    const held = claim(lockPath);
-    if (!held)
-        return; // already gone
-    if (held.owner === owner)
-        discard(held);
-    else
-        restore(held, lockPath);
+function releaseOwn(lockPath, owner) {
+    // Release must not give up: abandoning it here would leave the lock held for
+    // the rest of its lease, blocking everyone for minutes over a few
+    // milliseconds of mutex contention.
+    const deadline = Date.now() + 5000;
+    for (;;) {
+        const done = withMutation(lockPath, () => {
+            try {
+                if (fs_1.default.readFileSync(lockPath, 'utf8') === owner)
+                    fs_1.default.unlinkSync(lockPath);
+            }
+            catch { /* already gone */ }
+            return true;
+        });
+        if (done || Date.now() >= deadline)
+            return;
+        sleepBriefly();
+    }
 }
 /**
  * Block for a few milliseconds without a timer.
@@ -3197,6 +3332,7 @@ const plugin_context_1 = __webpack_require__(984);
 const delivery_auth_1 = __webpack_require__(836);
 const consent_1 = __webpack_require__(943);
 const registration_1 = __webpack_require__(644);
+const queue_maintenance_1 = __webpack_require__(348);
 const PROTOCOL_VERSION = 1;
 const LOCK_TTL_MS = 5 * 60 * 1000;
 function removeStaleLock(lockPath) {
@@ -3214,37 +3350,15 @@ function deliveryRevision(transcriptData, events, sanitizerMetadata) {
         transcriptSanitizer: sanitizerMetadata,
     })).digest('hex');
 }
-/** Consent as observed under its own lock, so a concurrent withdrawal is seen. */
-function consentHolds(ctx) {
+function observeConsent(ctx) {
     const gate = (0, consent_1.acquireConsentLock)();
     if (!gate)
-        return false; // contended: defer rather than assume
+        return 'unknown'; // contended: defer, decide nothing
     try {
-        return (0, consent_1.getConsent)(ctx) === 'allow';
+        return (0, consent_1.getConsent)(ctx) === 'allow' ? 'allow' : 'denied';
     }
     finally {
         gate();
-    }
-}
-/**
- * Retire a credential minted just as consent was withdrawn.
- *
- * The registration is already committed server-side, so the honest end state is
- * a disconnect: the delivery layer performs and retries `DELETE /register`. The
- * alternative — leaving it — keeps an active token for a user who withdrew.
- */
-function retireCredentialAfterWithdrawal(config, identity) {
-    const release = (0, registration_1.acquireLock)(identity.apiBaseHash, identity.pluginId, { waitMs: 5000 });
-    if (!release)
-        return; // retried on the next invocation
-    try {
-        const { record, corrupt } = (0, registration_1.readRecord)(identity.apiBaseHash, identity.pluginId);
-        if (corrupt || !record || record.state !== 'registered')
-            return;
-        (0, registration_1.beginDisconnect)(identity.apiBaseHash, identity.pluginId, record);
-    }
-    finally {
-        release();
     }
 }
 /** Terminal ingest rejections the client must act on, as reported by the server. */
@@ -3313,23 +3427,40 @@ forwardedPluginRoot) {
         // failed purge could mint a credential under already-withdrawn consent and
         // merely skip the upload — violating the invariant that absent, declined or
         // withdrawn consent yields no identifier, no credential and no /register.
-        if (!consentHolds(consentCtx))
+        if (observeConsent(consentCtx) !== 'allow')
             return;
-        // Enrolment performs network I/O, so no lock is held across it.
-        const auth = await (0, delivery_auth_1.resolveDeliveryAuth)(config);
+        // A withdrawal whose purge has not completed leaves pre-withdrawal telemetry
+        // on disk. Re-granting consent later must not make it deliverable, so
+        // delivery stays blocked for this project until the purge is done.
+        if (session.projectDir && (0, queue_maintenance_1.cleanupPendingForProject)(identity, session.projectDir))
+            return;
+        // The registration request is started INSIDE the consent lock via this gate,
+        // so a withdrawal cannot commit between the final check and the POST.
+        let registrationGateHeld = null;
+        const auth = await (0, delivery_auth_1.resolveDeliveryAuth)(config, {
+            open: () => {
+                const held = (0, consent_1.acquireConsentLock)();
+                if (!held)
+                    return false;
+                if ((0, consent_1.getConsent)(consentCtx) !== 'allow') {
+                    held();
+                    return false;
+                }
+                registrationGateHeld = held;
+                return true;
+            },
+            close: () => { registrationGateHeld?.(); registrationGateHeld = null; },
+        });
         if (auth.kind === 'defer')
             return; // retryable — the run stays queued
         if (auth.kind === 'stop') {
             throw new Error(`Telemetry delivery is blocked (${auth.reason}). Required action: ${auth.action}. ` +
                 `The run is kept at ${runDir}.`);
         }
-        // Consent can be withdrawn *while* enrolment is in flight. The credential
-        // then exists and must not simply be abandoned: retire it, so the durable
-        // end state still honours the withdrawal.
-        if (!consentHolds(consentCtx)) {
-            retireCredentialAfterWithdrawal(config, identity);
-            return;
-        }
+        // A withdrawal that lands after registration committed does NOT disconnect
+        // the device: the token is device-wide and may still be serving another
+        // project that is still consenting. Project withdrawal makes no server
+        // request and leaves registration untouched — it only stops this upload.
         // THE REQUEST-START BOUNDARY.
         //
         // Withdrawal commits under the consent lock; disconnect commits under the
